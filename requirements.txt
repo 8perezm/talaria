@@ -1,0 +1,3 @@
+# Executed on device via mip (see mip_install.py). Lists what must be present.
+# No pip requirements on the PC side except for host tests (see tests/).
+microdot>=2.5

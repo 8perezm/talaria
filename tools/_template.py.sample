@@ -1,0 +1,48 @@
+# HOW TO ADD A TOOL (copy this file to tools/tool_mything.py):
+#
+#   1. Copy this file -> tools/tool_mything.py
+#   2. Fill in the 3 marked spots: NAME (x2), SCHEMA, RUN.
+#   3. Add ONE line to tools/registry.py:
+#        from tools.tool_mything import TOOL as Tool_mything
+#      + append  Tool_mything,  to TOOL_REGISTRY (at the END).
+#   4. Deploy, toggle it on /functions, no reboot needed.
+#
+# That's it. Schema, execution, /api/tools and /functions pick you up
+# automatically via TOOL_REGISTRY.
+#
+# Rules: keep run() fast (<few seconds), result small (<1KB JSON), and put
+# shared helpers (pin allowlists, memory) in agent_tools.py — don't copy them.
+
+try:
+    import ujson as json
+except ImportError:
+    import json
+
+# ---------- SPOT 1: unique name + short UI label ----------
+NAME = "mything"
+UI_HINT = "One-line label for /functions"
+
+
+def _run(args):
+    # ---------- SPOT 3: what runs on the ESP32 ----------
+    # args is a dict of the parsed model args (may be empty). Return small JSON.
+    # Example: pin = int(args.get("pin", 2))
+    out = {"ok": True}
+    return json.dumps(out)
+
+
+# ---------- SPOT 2: what the model sees ----------
+TOOL = {
+    "name": NAME,
+    "ui_hint": UI_HINT,
+    "description": "What my thing does, in one sentence.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            # "pin": {"type": "integer"},
+        },
+        # "required": ["pin"],
+    },
+    "run": _run,
+    "max_result_chars": 1200,
+}

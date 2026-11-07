@@ -1,0 +1,19 @@
+# MicroPython device files — never commit live settings/memory
+config.json
+config.json.tmp
+memory.txt
+chatlog.jsonl
+*.tmp
+
+# CPython test / editor artifacts
+__pycache__/
+.pytest_cache/
+.playwright-mcp/
+*.pyc
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+.env
+.env.*

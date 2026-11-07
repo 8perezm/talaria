@@ -1,0 +1,75 @@
+<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Agent — Firmware update</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<style>:root{color-scheme:light dark}html,body{max-width:100%;overflow-x:hidden}body{font-family:'Inter',system-ui,-apple-system,sans-serif;margin:0}
+a{text-decoration:none}
+header{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #8884;flex:none;position:relative}
+header h1{font-size:16px;margin:0;line-height:1.2;flex:none}nav.topnav{display:flex;align-items:center;position:static}.navlinks{display:flex;align-items:center}.navlinks a{margin-left:10px;font-size:13px;line-height:1.2}
+.wrap{max-width:800px;margin:0 auto;padding:0 16px 24px}
+header nav.topnav{display:flex;align-items:center}
+#themebtn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;margin-left:10px;border:1px solid #8884;border-radius:8px;background:transparent;color:inherit;cursor:pointer;padding:0;flex:none;margin-top:0}
+#themebtn:hover{background:#8882}
+#themebtn svg{width:16px;height:16px}
+#themebtn .sun{display:none}
+html[data-theme="dark"] #themebtn .sun{display:block}
+html[data-theme="dark"] #themebtn .moon{display:none}
+html[data-theme="light"]{color-scheme:light}
+html[data-theme="dark"]{color-scheme:dark}
+html[data-theme="light"] body{background:#fff;color:#111}
+html[data-theme="dark"] body{background:#0f141b;color:#e6e8ee}
+html[data-theme="dark"] a{color:#8ab4ff}
+html[data-theme="dark"] .card{background:#161c26;border-color:#ffffff22}
+html[data-theme="dark"] input,html[data-theme="dark"] select{background:#1a2230;border-color:#ffffff2a;color:#e6e8ee}
+html[data-theme="dark"] code{background:#ffffff1a}
+html[data-theme="dark"] pre{background:#ffffff0d!important;border-color:#ffffff22}#consolebtn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;margin-left:10px;border:1px solid #8884;border-radius:8px;background:transparent;color:inherit;cursor:pointer;padding:0;flex:none;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;font-weight:700;margin-top:0}
+#consolebtn:hover{background:#8882}
+#consoledrawer{position:fixed;left:0;right:0;bottom:0;z-index:300;display:none;flex-direction:column;height:min(48vh,430px);background:#0d1117;color:#e6edf3;border-top:1px solid #8886}
+#consoledrawer.open{display:flex}
+#cslbar{display:flex;align-items:center;gap:6px;padding:7px 10px;border-bottom:1px solid #ffffff22;font-size:12px;flex:none;flex-wrap:wrap}
+#cslbar .t{font-weight:700}
+#cslstatus{flex:1;min-width:120px;opacity:.75;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#cslbar button{border:1px solid #ffffff33;background:transparent;color:inherit;border-radius:6px;font-size:11px;padding:4px 9px;cursor:pointer;font-family:inherit}
+#cslbar button:hover{background:#ffffff1a}
+#cslgrab{flex:none;height:16px;display:flex;align-items:center;justify-content:center;cursor:ns-resize;touch-action:none;user-select:none;-webkit-user-select:none;background:#ffffff10;border-bottom:1px solid #ffffff18}
+#cslgrab:before{content:'';width:44px;height:4px;border-radius:2px;background:#ffffff44}
+#cslgrab:hover:before{background:#ffffff88}
+#cslpre{flex:1;overflow:auto;margin:0;padding:10px 12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+#menubtn{display:none;align-items:center;justify-content:center;width:30px;height:30px;margin-left:10px;border:1px solid #8884;border-radius:8px;background:transparent;color:inherit;cursor:pointer;padding:0;flex:none}
+#menubtn:hover{background:#8882}
+#menubtn svg{width:16px;height:16px}
+@media(max-width:700px){
+#menubtn{display:inline-flex}
+.navlinks{display:none;position:absolute;top:100%;right:8px;flex-direction:column;align-items:stretch;background:Canvas;border:1px solid #8885;border-radius:12px;box-shadow:0 12px 32px #0006;z-index:210;min-width:170px;padding:6px;gap:0}
+.navlinks.open{display:flex}
+.navlinks a{margin:0!important;padding:10px 12px;border-radius:8px;font-size:14px!important;line-height:1.3}
+.navlinks a:hover{background:#8882;text-decoration:none}
+}
+html[data-theme="dark"] .navlinks{background:#161c26;border-color:#ffffff22}
+@media(max-width:700px){.wrap{padding-left:12px;padding-right:12px}input,select,textarea{font-size:16px}}</style>
+<script>try{var t=localStorage.getItem('agent_theme');if(!t){t=matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'}document.documentElement.dataset.theme=t}catch(e){}</script>
+</head><body>
+<header><h1><a href="/" style="color:inherit">Agent</a></h1><nav class="topnav"><div class="navlinks" id="sitenav"><a href="/">Chat</a><a href="/files">Files</a><a href="/functions">Functions</a><a href="/stats">Stats</a><a href="/docs">Docs</a><a href="/setup">Setup</a><a href="/update">Firmware</a></div><button id="menubtn" type="button" aria-label="Open navigation menu" aria-expanded="false" aria-controls="sitenav" title="Menu"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/></svg></button><button id="consolebtn" type="button" aria-label="Toggle console" title="Console logs">&gt;_</button><button id="themebtn" type="button" aria-label="Toggle dark mode" title="Toggle dark mode"><svg class="moon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg><svg class="sun" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg></button></nav></header>
+<div class="wrap">
+<h2>App update (.py upload, no cable)</h2>
+<form id="otaform">
+<input id="fwfile" type="file" name="firmware" accept=".py,.html,.json,.txt,.mpy" required/>
+<button type="submit">Upload file</button></form>
+<div id="otamsg" style="margin-top:8px;font-size:13px"></div>
+<p><small>Upload a project file (<code>main.py</code>, <code>config.py</code>, <code>server.py</code>, a <code>tools/*.py</code> module, or a <code>www/*.html</code> page).
+The device saves it to its filesystem and reboots. <code>config.json</code>, <code>memory.txt</code> and <code>chatlog.jsonl</code> are never overwritten here.
+For first install / MicroPython firmware itself, use USB + <code>mpremote</code> (see README).</small></p>
+</div><script>
+function tok(){try{return localStorage.getItem('esp32_token')||''}catch(e){return ''}}
+document.getElementById('otaform').onsubmit=async function(e){e.preventDefault();var m=document.getElementById('otamsg');var f=document.getElementById('fwfile').files[0];if(!f){m.textContent='Choose a .py/.html file first.';return;}m.textContent='Uploading…';try{var fd=new FormData();fd.append('firmware',f,f.name);var h={};var t=tok();if(t)h['Authorization']='Bearer '+t;var r=await fetch('/update',{method:'POST',headers:h,body:fd});var txt=await r.text();m.textContent=r.ok?txt+' Rebooting…':'Error '+(r.status+': '+txt);}catch(err){m.textContent='Upload failed: '+err;}};
+</script><div id="consoledrawer" role="log" aria-label="Device console"><div id="cslgrab" title="Drag to resize"></div><div id="cslbar"><span class="t">Console</span><span id="cslstatus">…</span><button id="cslrefresh" type="button" title="Reload status and logs">Reload</button><button id="cslpause" type="button" title="Pause auto-refresh">Pause</button><button id="cslcopy" type="button" title="Copy visible logs">Copy</button><button id="cslclear" type="button" title="Clear device log buffer">Clear</button><button id="cslclose" type="button" title="Close console">Close</button></div><pre id="cslpre">Click Reload or wait…</pre></div><script>(function(){var btn=document.getElementById('consolebtn'),dw=document.getElementById('consoledrawer'),pre=document.getElementById('cslpre'),st=document.getElementById('cslstatus');if(!btn||!dw)return;var seq=0,timer=null,paused=false,lines=[];function ctok(){try{return localStorage.getItem('esp32_token')||''}catch(e){return ''}}async function cf(u,o){o=o||{};o.headers=o.headers||{};var t=ctok();if(t)o.headers['Authorization']='Bearer '+t;var r=await fetch(u,o);if(r.status===401)throw new Error('auth');if(!r.ok){var tx='';try{tx=await r.text()}catch(e){}throw new Error((tx||'').slice(0,120)||('HTTP '+r.status));}return r;}function paint(){if(lines.length>500)lines=lines.slice(-500);pre.textContent=lines.join('\n')||'(no logs yet)';pre.scrollTop=pre.scrollHeight;}async function loadStatus(){try{var s=await(await cf('/api/status')).json();var heap=s.free_heap?Math.round(s.free_heap/1024)+'K heap':'';st.textContent=(s.ip||'')+' • '+(s.model||'')+' • '+heap+' • up '+(s.uptime_s||0)+'s • '+(s.wifi_connected?('WiFi '+(s.ssid||'ok')):'WiFi OFF');}catch(e){st.textContent='status unavailable'+(e&&e.message==='auth'?' (locked — unlock on Chat page)':': '+((e&&e.message)||e));}}async function fullLoad(){st.textContent='Loading…';try{var j=await(await cf('/api/logs?limit=150')).json();lines=(j.entries||[]).map(function(e){return e.msg});seq=j.seq||0;paint();}catch(e){pre.textContent='Log load failed: '+((e&&e.message)||e);}}async function poll(){if(paused||!dw.classList.contains('open'))return;try{var j=await(await cf('/api/logs?since='+seq+'&limit=150')).json();var ne=j.entries||[];seq=j.seq||seq;if(ne.length){for(var i=0;i<ne.length;i++)lines.push(ne[i].msg);paint();}}catch(e){}}function cslClamp(h){return Math.max(120,Math.min(window.innerHeight*0.92,Math.round(h)));}
+function cslRestore(){try{var h=parseInt(localStorage.getItem('csl_height')||'',10);if(h>=120)dw.style.height=cslClamp(h)+'px';}catch(e){}}
+function openDw(){dw.classList.add('open');cslRestore();loadStatus();fullLoad();if(timer)clearInterval(timer);timer=setInterval(poll,2000);}function closeDw(){dw.classList.remove('open');if(timer){clearInterval(timer);timer=null;}}btn.addEventListener('click',function(){dw.classList.contains('open')?closeDw():openDw();});var cslGrab=document.getElementById('cslgrab');
+if(cslGrab){(function(){var sy=0,sh=0,on=false;
+cslGrab.addEventListener('pointerdown',function(e){on=true;sy=e.clientY;sh=dw.getBoundingClientRect().height;try{cslGrab.setPointerCapture(e.pointerId);}catch(x){}e.preventDefault();});
+cslGrab.addEventListener('pointermove',function(e){if(!on)return;dw.style.height=cslClamp(sh+(sy-e.clientY))+'px';});
+function cslOff(){if(!on)return;on=false;try{localStorage.setItem('csl_height',String(Math.round(dw.getBoundingClientRect().height)));}catch(x){}}
+cslGrab.addEventListener('pointerup',cslOff);cslGrab.addEventListener('pointercancel',function(){on=false;});})();}
+document.getElementById('cslclose').onclick=closeDw;document.getElementById('cslrefresh').onclick=function(){loadStatus();fullLoad();};document.getElementById('cslpause').onclick=function(e){paused=!paused;e.target.textContent=paused?'Resume':'Pause';};document.getElementById('cslcopy').onclick=function(){try{var t=pre.textContent||'';if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(function(){st.textContent='Copied.';},function(){st.textContent='Copy failed.';});}else{var ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');st.textContent='Copied.';}catch(x){st.textContent='Copy failed.';}ta.remove();}}catch(e){st.textContent='Copy failed.';}};document.getElementById('cslclear').onclick=async function(){try{await cf('/api/logs/clear',{method:'POST'});lines=[];seq=0;paint();st.textContent='Log buffer cleared.';}catch(e){st.textContent='Clear failed: '+((e&&e.message)||e);}};document.addEventListener('keydown',function(e){if(e.key==='Escape'&&dw.classList.contains('open'))closeDw();});})();
+</script><script>(function(){var b=document.getElementById('themebtn');if(!b)return;b.addEventListener('click',function(){var h=document.documentElement;var n=h.dataset.theme==='dark'?'light':'dark';h.dataset.theme=n;try{localStorage.setItem('agent_theme',n)}catch(e){}});})();</script><script>(function(){var b=document.getElementById('menubtn'),n=document.getElementById('sitenav');if(!b||!n)return;b.addEventListener('click',function(e){e.stopPropagation();var o=n.classList.toggle('open');b.classList.toggle('open',o);b.setAttribute('aria-expanded',o?'true':'false');});document.addEventListener('click',function(e){if(n.classList.contains('open')&&!n.contains(e.target)&&!b.contains(e.target)){n.classList.remove('open');b.classList.remove('open');b.setAttribute('aria-expanded','false');}});document.addEventListener('keydown',function(e){if(e.key==='Escape'&&n.classList.contains('open')){n.classList.remove('open');b.classList.remove('open');b.setAttribute('aria-expanded','false');}});n.addEventListener('click',function(e){if(e.target&&e.target.tagName==='A'){n.classList.remove('open');b.classList.remove('open');b.setAttribute('aria-expanded','false');}});})();</script></body></html>
