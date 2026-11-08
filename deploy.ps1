@@ -20,9 +20,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function MPRun([string[]]$args) {
-  & python -m mpremote connect $Port @args
-  if ($LASTEXITCODE -ne 0) { throw "mpremote failed: $($args -join ' ')" }
+function MPRun([string[]]$mpArgs) {
+  & python -m mpremote connect $Port @mpArgs
+  if ($LASTEXITCODE -ne 0) { throw "mpremote failed: $($mpArgs -join ' ')" }
 }
 
 function Copy-Verified([string]$local, [string]$remote) {
