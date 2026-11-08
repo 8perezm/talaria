@@ -19,251 +19,106 @@ except Exception:
 _ap_scan_cache = {"body": "", "at": 0}
 _models_cache = {"body": "", "at": 0, "ep": ""}
 
+# ---------- D3 usage counters (RAM only; reset on (re)boot) ----------
+# turns_since_boot: chat turns served since boot (POST /api/chat turns plus
+# /api/chat-stream responses; a streamed turn that yields need_tools falls
+# back to /api/chat for the tool loop and counts twice — once per request).
+# tool_calls lives in agent_tools._TOOL_CALL_COUNTS (execTool is the single
+# choke point for every tool execution). last_chat_ms: wall time around the
+# chat turn in the server handler. last_upstream_ms: wall time around the
+# upstream LLM call; None (JSON null) until the first LLM-backed turn —
+# validation/busy/offline rejections never touch it. All updates are
+# guarded so instrumentation can never break a chat turn.
+
+_STATS_TURNS_SINCE_BOOT = 0
+_STATS_LAST_CHAT_MS = 0
+_STATS_LAST_UPSTREAM_MS = None
+
+
+def _stats_note_turn(chat_ms, upstream_ms=None):
+    """Record one chat turn's timings. Never raises."""
+    global _STATS_TURNS_SINCE_BOOT, _STATS_LAST_CHAT_MS, _STATS_LAST_UPSTREAM_MS
+    try:
+        _STATS_TURNS_SINCE_BOOT = int(_STATS_TURNS_SINCE_BOOT) + 1
+    except Exception:
+        try:
+            _STATS_TURNS_SINCE_BOOT = 1
+        except Exception:
+            pass
+    try:
+        _STATS_LAST_CHAT_MS = int(chat_ms)
+    except Exception:
+        pass
+    try:
+        if upstream_ms is not None:
+            _STATS_LAST_UPSTREAM_MS = int(upstream_ms)
+    except Exception:
+        pass
+
+
 _MODELS_MAX_IDS = 200
 _MODELS_MAX_BYTES = 131072
 
 # ---------- file manager (Explorer) helpers ----------
-# Pure filesystem helpers (MicroPython-compatible: os.listdir/os.stat only).
-# _FS_ROOT lets host tests point the tree at a tmp dir; on device it stays "".
+# Canonical implementations live in fsutil.py (shared with the Phase 7 file
+# tools and checkpoint.py). These thin wrappers keep the historic server._fs_*
+# names/signatures (host tests use them) plus the server-local _FS_ROOT
+# override, which is passed through explicitly on every call.
 _FS_ROOT = ""
 _FS_MAX_READ = 100000
 _FS_MAX_WRITE = 200000
 
 
+def _fsu():
+    import fsutil as _m
+    return _m
+
+
 def _fs_norm(p):
-    """Normalise a user-supplied path to 'a/b/c' ('' = root). None = invalid."""
-    if p is None:
-        return ""
-    s = str(p).replace("\\", "/").strip()
-    if not s or s == "/":
-        return ""
-    parts = []
-    for seg in s.split("/"):
-        if not seg or seg == ".":
-            continue
-        if seg == "..":
-            return None
-        if "\x00" in seg:
-            return None
-        parts.append(seg)
-        if len(parts) > 32:
-            return None
-    norm = "/".join(parts)
-    if len(norm) > 200:
-        return None
-    return norm
+    return _fsu().norm(p)
 
 
 def _fs_full(norm):
-    base = (_FS_ROOT or "").rstrip("/")
-    if base:
-        return base if not norm else base + "/" + norm
-    return "/" + norm if norm else "/"
+    return _fsu().full(norm, _FS_ROOT)
 
 
 def _fs_parent(norm):
-    if not norm or "/" not in norm:
-        return ""
-    return norm.rsplit("/", 1)[0]
+    return _fsu().parent(norm)
 
 
 def _fs_is_dir(full):
-    import os
-    try:
-        st = os.stat(full)
-    except Exception:
-        return None
-    try:
-        mode = st[0]
-    except Exception:
-        return None
-    try:
-        import stat as _stat
-        return _stat.S_ISDIR(mode)
-    except Exception:
-        pass
-    return bool(mode & 0x4000)
+    return _fsu().is_dir(full)
 
 
 def _fs_stat_size(full):
-    import os
-    try:
-        return int(os.stat(full)[6])
-    except Exception:
-        return 0
+    return _fsu().stat_size(full)
 
 
 def _fs_stat_mtime(full):
-    import os
-    try:
-        st = os.stat(full)
-        if len(st) > 8:
-            return int(st[8])
-    except Exception:
-        pass
-    return 0
+    return _fsu().stat_mtime(full)
 
 
 def _fs_list_dir(norm):
     """Return (entries, err). entries=[{name,path,is_dir,size,mtime}]."""
-    import os
-    full = _fs_full(norm)
-    if _fs_is_dir(full) is not True and norm != "":
-        # root always listable; anything else must be a dir
-        if _fs_is_dir(full) is None:
-            return None, "not found"
-        return None, "not a directory"
-    names = []
-    try:
-        il = getattr(os, "ilistdir", None)
-        if il is not None:
-            for e in il(full):
-                try:
-                    n = e[0]
-                except Exception:
-                    continue
-                if isinstance(n, bytes):
-                    try:
-                        n = n.decode()
-                    except Exception:
-                        continue
-                if not n or n in (".", ".."):
-                    continue
-                names.append(n)
-        else:
-            for n in os.listdir(full):
-                if isinstance(n, bytes):
-                    try:
-                        n = n.decode()
-                    except Exception:
-                        continue
-                if not n or n in (".", ".."):
-                    continue
-                names.append(n)
-    except Exception as e:
-        return None, "list failed: %s" % str(e)[:80]
-    try:
-        names.sort(key=lambda s: s.lower())
-    except Exception:
-        names.sort()
-    entries = []
-    for n in names[:500]:
-        child = (norm + "/" + n) if norm else n
-        ff = _fs_full(child)
-        d = _fs_is_dir(ff)
-        is_dir = bool(d)
-        entries.append({"name": n, "path": "/" + child, "is_dir": is_dir,
-                        "size": 0 if is_dir else _fs_stat_size(ff),
-                        "mtime": _fs_stat_mtime(ff)})
-    return entries, ""
+    return _fsu().list_dir(norm, _FS_ROOT)
 
 
 def _fs_read_text(norm, max_bytes=_FS_MAX_READ):
-    import os
-    full = _fs_full(norm)
-    d = _fs_is_dir(full)
-    if d is None:
-        return None, "not found", 0
-    if d:
-        return None, "is a directory", 0
-    size = _fs_stat_size(full)
-    try:
-        with open(full, "rb") as f:
-            data = f.read(max_bytes + 1)
-    except Exception as e:
-        return None, "read failed: %s" % str(e)[:80], 0
-    trunc = len(data) > max_bytes
-    if trunc:
-        data = data[:max_bytes]
-    try:
-        text = data.decode("utf-8")
-    except Exception:
-        return None, "binary file (download instead)", size
-    return {"content": text, "size": size, "truncated": trunc}, "", size
+    return _fsu().read_text(norm, max_bytes, _FS_ROOT)
 
 
 def _fs_ensure_parent(norm):
     """mkdir -p the parent chain of norm. Returns '' or err text."""
-    import os
-    parent = _fs_parent(norm)
-    if not parent:
-        return ""
-    cur = ""
-    for seg in parent.split("/"):
-        cur = seg if not cur else cur + "/" + seg
-        try:
-            os.mkdir(_fs_full(cur))
-        except Exception as e:
-            # 17 = EEXIST on MicroPython/CPython; anything else on existing
-            # dir is also fine — verify it is a dir before giving up.
-            if _fs_is_dir(_fs_full(cur)) is not True:
-                return "mkdir failed: %s" % str(e)[:80]
-    return ""
+    return _fsu().ensure_parent(norm, _FS_ROOT)
 
 
 def _fs_write_text(norm, content, max_bytes=_FS_MAX_WRITE):
-    if not norm:
-        return "no filename"
-    if content is None:
-        return "no content"
-    if isinstance(content, bytes):
-        try:
-            content = content.decode("utf-8")
-        except Exception:
-            return "binary content not supported here (use upload)"
-    data = content.encode("utf-8")
-    if len(data) > max_bytes:
-        return "file too large (%dB, max %dB)" % (len(data), max_bytes)
-    err = _fs_ensure_parent(norm)
-    if err:
-        return err
-    try:
-        with open(_fs_full(norm), "wb") as f:
-            f.write(data)
-    except Exception as e:
-        return "write failed: %s" % str(e)[:80]
-    return ""
+    return _fsu().write_text(norm, content, max_bytes, _FS_ROOT)
 
 
 def _fs_delete(norm):
     """Delete a file or directory tree. Refuses root. Returns '' or err."""
-    import os
-    if not norm:
-        return "refusing to delete /"
-    full = _fs_full(norm)
-    d = _fs_is_dir(full)
-    if d is None:
-        return "not found"
-    if not d:
-        try:
-            os.remove(full)
-        except Exception as e:
-            return "delete failed: %s" % str(e)[:80]
-        return ""
-    # directory: iterative depth-first delete (no os.walk on MicroPython)
-    stack = [norm]
-    order = []
-    while stack:
-        cur = stack.pop()
-        order.append(cur)
-        entries, err = _fs_list_dir(cur)
-        if err:
-            return err
-        for e in entries:
-            child_norm = e["path"][1:]  # strip leading '/'
-            if e["is_dir"]:
-                stack.append(child_norm)
-            else:
-                try:
-                    os.remove(_fs_full(child_norm))
-                except Exception as ex:
-                    return "delete failed: %s" % str(ex)[:80]
-    for cur in reversed(order):
-        try:
-            os.rmdir(_fs_full(cur))
-        except Exception as e:
-            return "rmdir failed: %s" % str(e)[:80]
-    return ""
+    return _fsu().delete(norm, _FS_ROOT)
 
 
 def _split_url(url):
@@ -337,26 +192,35 @@ def _scan_model_ids(chunks, max_ids=_MODELS_MAX_IDS):
     return ids
 
 
-def _read_log_tail(path, max_lines=10, max_chars=800):
+def _read_log_tail(path, max_lines=10, max_chars=None, block_bytes=16384):
     """Return (entries, bytes) for the last max_lines entries of the chat log.
 
     entries = [{"role": "user"|"assistant", "content": str}]. Shared by
-    GET /api/memory (tail=N) and the chat page's transcript restore.
+    GET /api/memory (tail=N), the chat page's transcript restore, and the
+    prompt's recent-history fallback (via fsutil.read_jsonl_tail).
+
+    fsutil.read_jsonl_tail reads backwards in fixed-size blocks and parses only
+    the lines it needs, so RAM/time scale with the requested tail rather than
+    the log size — important once the log is hundreds of KB (or on USB later).
+
+    max_chars defaults to config.cfgChatEntryChars (Config -> Chat history);
+    the old hard cap of 800 was what cut long replies to ~2 paragraphs on
+    reload.
     """
-    total = 0
-    try:
-        with open(path, "r") as f:
-            all_text = f.read()
-    except OSError:
-        return [], 0
-    total = len(all_text)
-    lines = [ln for ln in all_text.split("\n") if ln.strip()]
-    out = []
-    for ln in lines[-max_lines:]:
+    if max_chars is None:
         try:
-            e = json.loads(ln)
+            import config
+            max_chars = int(getattr(config, "cfgChatEntryChars",
+                                    config.DEFAULT_CHAT_ENTRY_CHARS))
         except Exception:
-            continue
+            max_chars = 4000
+    try:
+        import fsutil
+        raw, total = fsutil.read_jsonl_tail(path, max_lines, block_bytes)
+    except Exception:
+        return [], 0
+    out = []
+    for e in raw:
         r = str(e.get("r", ""))[:20]
         c = str(e.get("c", ""))
         if not r or not c:
@@ -717,7 +581,10 @@ def _collect_stats(do_i2c=False):
             s["mem_bytes"] = 0
         try:
             import os as _os5
-            s["config_bytes"] = int(_os5.stat("config.json")[6])
+            try:
+                s["config_bytes"] = int(_os5.stat("config.yaml")[6])
+            except Exception:
+                s["config_bytes"] = int(_os5.stat("config.json")[6])
         except Exception:
             s["config_bytes"] = 0
         try:
@@ -763,7 +630,7 @@ def _collect_stats(do_i2c=False):
         except Exception:
             s["ip"] = ""
         try:
-            s["mdns"] = "http://" + _cfg.MDNS_NAME + ".local"
+            s["mdns"] = "http://" + getattr(_cfg, "cfgMdnsName", _cfg.MDNS_NAME) + ".local"
         except Exception:
             s["mdns"] = ""
         try:
@@ -916,7 +783,523 @@ def _collect_stats(do_i2c=False):
         s["i2c"] = _i2c
     else:
         s["i2c"] = None
+    # --- D3 usage counters (RAM only, reset on boot — see _STATS_* above) ---
+    try:
+        s["turns_since_boot"] = int(_STATS_TURNS_SINCE_BOOT)
+    except Exception:
+        s["turns_since_boot"] = 0
+    try:
+        import agent_tools as _at_stats
+        _tc = getattr(_at_stats, "_TOOL_CALL_COUNTS", None)
+        s["tool_calls"] = dict(_tc) if isinstance(_tc, dict) else {}
+    except Exception:
+        s["tool_calls"] = {}
+    try:
+        s["last_chat_ms"] = int(_STATS_LAST_CHAT_MS)
+    except Exception:
+        s["last_chat_ms"] = 0
+    try:
+        s["last_upstream_ms"] = (int(_STATS_LAST_UPSTREAM_MS)
+                                 if _STATS_LAST_UPSTREAM_MS is not None
+                                 else None)
+    except Exception:
+        s["last_upstream_ms"] = None
     return s
+
+
+# ---------- doctor (Phase 0 diagnostics: heap/wifi/ntp/dns/upstream/files) ----------
+# MicroPython-safe: utf-8 only, no new third-party imports, small bounded
+# allocations. All probes are best-effort and never raise — failures surface
+# as ok:false fields, never a 500.
+_DOCTOR_HEAP_OK = 1000000
+# Same value as net._PLAUSIBLE_TIME (2024-01-01; MicroPython epoch is 2000).
+_DOCTOR_PLAUSIBLE_TIME = 757382400
+_DOCTOR_FILES = ("config.yaml", "config.json", "config.json.bak", "memory.txt", "user.txt",
+                 "chatlog.jsonl", "chatlog.prev.jsonl", "cron.json",
+                 "tg.json")
+_DOCTOR_UPSTREAM_PORT = 443
+_DOCTOR_UPSTREAM_TIMEOUT = 5
+
+
+def _doctor_heap_free():
+    try:
+        import gc as _gc
+        try:
+            _gc.collect()
+        except Exception:
+            pass
+        return int(_gc.mem_free())
+    except Exception:
+        return 0
+
+
+def _doctor_verdict(heap_free):
+    """Return (psram_ok, firmware_verdict) for a heap size in bytes."""
+    if heap_free > _DOCTOR_HEAP_OK:
+        return True, "SPIRAM_OCT"
+    return False, "standard-build-suspect"
+
+
+def _doctor_now_ms():
+    try:
+        import time as _t
+        if hasattr(_t, "ticks_ms"):
+            return int(_t.ticks_ms())
+        return int(_t.time() * 1000)
+    except Exception:
+        return 0
+
+
+def _doctor_since_ms(t0):
+    try:
+        import time as _t
+        if hasattr(_t, "ticks_ms") and hasattr(_t, "ticks_diff"):
+            return int(_t.ticks_diff(_t.ticks_ms(), t0))
+        return int(_t.time() * 1000) - int(t0)
+    except Exception:
+        return 0
+
+
+def _doctor_file_size(norm):
+    """Size of a state file in bytes; -1 when missing (never raises)."""
+    import os
+    try:
+        return int(os.stat(_fs_full(norm))[6])
+    except Exception:
+        return -1
+
+
+def _doctor_check_dns(host):
+    """Single getaddrinfo attempt (no timeout exists on device). Never raises."""
+    t0 = _doctor_now_ms()
+    if not host:
+        return False, 0
+    try:
+        import socket
+        infos = socket.getaddrinfo(host, 443)
+        return (True if infos else False), _doctor_since_ms(t0)
+    except Exception:
+        try:
+            return False, _doctor_since_ms(t0)
+        except Exception:
+            return False, 0
+
+
+def _doctor_check_upstream(host, port=_DOCTOR_UPSTREAM_PORT,
+                           timeout=_DOCTOR_UPSTREAM_TIMEOUT):
+    """Plain TCP connect (no TLS), small buffers, then close. Never raises."""
+    t0 = _doctor_now_ms()
+    if not host:
+        return False, 0
+    try:
+        import socket
+    except ImportError:
+        return False, 0
+    s = None
+    try:
+        s = socket.socket()
+        try:
+            s.settimeout(timeout)
+        except Exception:
+            pass
+        try:
+            addrs = _resolve_all_ipv4(host, port)
+        except Exception:
+            addrs = []
+        if addrs:
+            s.connect(addrs[0])
+        else:
+            s.connect((host, port))
+        return True, _doctor_since_ms(t0)
+    except Exception:
+        try:
+            return False, _doctor_since_ms(t0)
+        except Exception:
+            return False, 0
+    finally:
+        try:
+            if s is not None:
+                s.close()
+        except Exception:
+            pass
+
+
+def _collect_doctor():
+    """Build the GET /api/doctor payload. Never raises (fields degrade)."""
+    heap_free = _doctor_heap_free()
+    psram_ok, verdict = _doctor_verdict(heap_free)
+    try:
+        import time as _t
+        ntp_ok = bool(_t.time() > _DOCTOR_PLAUSIBLE_TIME)
+    except Exception:
+        ntp_ok = False
+    wifi_connected, ip, ap_mode = False, "", False
+    try:
+        import net as _net
+        ap_mode = bool(_net.apMode)
+        try:
+            wifi_connected = bool(_net.is_connected())
+        except Exception:
+            wifi_connected = False
+        try:
+            ip = _net.local_ip() or ""
+        except Exception:
+            ip = ""
+    except Exception:
+        pass
+    endpoint = ""
+    try:
+        import config as _cfg
+        endpoint = _cfg.cfgEndpoint or ""
+    except Exception:
+        endpoint = ""
+    host = ""
+    if endpoint:
+        try:
+            _https, host, _port, _path = _split_url(endpoint)
+        except Exception:
+            host = ""
+    dns_ok, dns_ms = _doctor_check_dns(host)
+    upstream_ok, upstream_ms = _doctor_check_upstream(host)
+    files = {}
+    for name in _DOCTOR_FILES:
+        try:
+            files[name] = _doctor_file_size(name)
+        except Exception:
+            files[name] = -1
+    return {"heap_free": heap_free, "psram_ok": psram_ok,
+            "firmware_verdict": verdict,
+            "wifi": {"connected": wifi_connected, "ip": ip,
+                     "ap_mode": ap_mode},
+            "ntp_ok": ntp_ok,
+            "endpoint": endpoint, "host": host,
+            "dns_ok": dns_ok, "dns_ms": dns_ms,
+            "upstream_ok": upstream_ok, "upstream_ms": upstream_ms,
+            "files": files}
+
+
+# ---------- Phase 9: toolset map (static grouping for /functions) ----------
+# Maps every registered tool name -> toolset. The 22 TOOL dicts are NEVER
+# touched (append-only registry, bitmask order frozen); this table lives in
+# server.py only and the /functions page groups by the "toolset" field of
+# GET /api/tools. Unknown names fall back to "agent".
+TOOLSET_MAP = {
+    "get_status": "device", "gpio_write": "device", "gpio_read": "device",
+    "adc_read": "device", "wifi_scan": "device", "restart_device": "device",
+    "blink": "device",
+    "mem_save": "memory", "mem_read": "memory", "memory": "memory",
+    "skills_list": "skills", "skill_view": "skills",
+    "session_search": "sessions",
+    "read_file": "files", "write_file": "files",
+    "patch_file": "files", "search_files": "files",
+    "web_fetch": "web",
+    "cron": "agent", "todo": "agent", "delegate_task": "agent",
+    "exec_py": "agent",
+}
+TOOLSET_ORDER = ("device", "memory", "skills", "sessions", "files",
+                 "web", "agent")
+
+
+def tool_toolset(name):
+    """Toolset for a tool name (Phase 9 grouping). Never raises."""
+    try:
+        return TOOLSET_MAP.get(str(name), "agent")
+    except Exception:
+        return "agent"
+
+
+def _system_prompt():
+    """Phase 9 prompt alignment seam: tiered Mini prompt, legacy fallback.
+
+    Used by the SSE stream path and GET /api/tools prompt_preview (both were
+    legacy buildSystemPrompt until Phase 9). One call per request keeps the
+    frozen-per-turn rule. Host tests monkeypatch prompt.buildMiniPrompt to
+    verify the seam.
+    """
+    try:
+        import prompt as _pm
+        return _pm.buildMiniPrompt()
+    except Exception:
+        import agent_tools as _at
+        return _at.buildSystemPrompt()
+
+
+def _parse_approval_bool(v, default=None):
+    """Loose bool parse for approval toggles. None stays None (preserve)."""
+    if v is None:
+        return default
+    if v is True or v == 1:
+        return True
+    if v is False or v == 0:
+        return False
+    try:
+        s = str(v).strip().lower()
+    except Exception:
+        return default
+    if s in ("1", "true", "on", "yes", "checked"):
+        return True
+    if s in ("0", "false", "off", "no"):
+        return False
+    return default
+
+
+def _agent_get_approvals():
+    """(memory_write_approval, skills_write_approval) from live modules."""
+    mem_on = False
+    sk_on = True
+    try:
+        import memory as _mm
+        mem_on = bool(_mm.approval_enabled())
+    except Exception:
+        pass
+    try:
+        import skillstore as _sk
+        sk_on = bool(_sk.approval_enabled())
+    except Exception:
+        pass
+    return mem_on, sk_on
+
+
+def _agent_set_approvals(mem_val, sk_val):
+    """Persist approval toggles into config.yaml. None = preserve."""
+    if mem_val is None and sk_val is None:
+        return
+    try:
+        import config as _cfg
+        _cfg.saveApprovals(mem_val, sk_val)
+    except Exception:
+        pass
+
+
+# ---------- /api/agent payload helpers (Phase 1: fallback + max_iters) ----------
+# Module-level (microdot-free) so host tests can drive them directly.
+# Unknown POST keys are ignored; GET never leaks full keys (masked only).
+
+
+def _agent_get_payload():
+    """GET /api/agent body. Never includes full API keys."""
+    import config
+    try:
+        iters = int(config.agent_max_iters)
+    except Exception:
+        iters = 3
+    if iters < 1:
+        iters = 1
+    if iters > 5:
+        iters = 5
+    try:
+        mem_on, sk_on = _agent_get_approvals()
+    except Exception:
+        mem_on, sk_on = False, True
+    return {"endpoint": config.cfgEndpoint, "model": config.cfgModel,
+            "api_key_masked": config.maskedKey(config.cfgApiKey),
+            "fallback_endpoint": getattr(config, "cfgFallbackEndpoint", ""),
+            "fallback_model": getattr(config, "cfgFallbackModel", ""),
+            "fallback_key_masked": config.maskedKey(getattr(config, "cfgFallbackKey", "")),
+            "agent_max_iters": iters,
+            "memory_write_approval": bool(mem_on),
+            "skills_write_approval": bool(sk_on)}
+
+
+def _agent_apply_post(d):
+    """Apply a POST /api/agent body. Returns (err_text_or_None, result_dict).
+
+    Unknown keys are ignored. Absent fallback/max_iters keys preserve current
+    values; present-but-empty fallback keys clear them. Primary key/model
+    keep the legacy rule: empty preserves the stored value.
+    """
+    import config
+    ep = str(d.get("endpoint", "") or "").strip() or config.cfgEndpoint
+    if "apiKey" in d:
+        _raw_key = d.get("apiKey")
+    elif "api_key" in d:
+        _raw_key = d.get("api_key")
+    else:
+        _raw_key = None
+    if _raw_key is None:
+        key = config.cfgApiKey
+    else:
+        key = str(_raw_key or "").strip() or config.cfgApiKey
+    model = str(d.get("model", "") or "").strip() or config.cfgModel or "gpt-4o-mini"
+    if not ep:
+        return "endpoint required", None
+    if "fallback_endpoint" in d:
+        fb_ep = str(d.get("fallback_endpoint") or "").strip()
+    elif "fallbackEndpoint" in d:
+        fb_ep = str(d.get("fallbackEndpoint") or "").strip()
+    else:
+        fb_ep = None
+    if "fallback_key" in d:
+        fb_key = str(d.get("fallback_key") or "").strip()
+    elif "fallbackKey" in d:
+        fb_key = str(d.get("fallbackKey") or "").strip()
+    else:
+        fb_key = None
+    if "fallback_model" in d:
+        fb_model = str(d.get("fallback_model") or "").strip()
+    elif "fallbackModel" in d:
+        fb_model = str(d.get("fallbackModel") or "").strip()
+    else:
+        fb_model = None
+    iters = None
+    for _k in ("agent_max_iters", "max_iters", "maxIters"):
+        if _k in d:
+            try:
+                n = int(d.get(_k))
+                if n < 1:
+                    n = 1
+                if n > 5:
+                    n = 5
+                iters = n
+            except Exception:
+                iters = None
+            break
+    config.saveAgentOnly(ep, key, model, fb_ep, fb_key, fb_model, iters)
+    # Phase 9: memory/skills write_approval toggles (absent = preserve).
+    try:
+        mem_val = None
+        for _k in ("memory_write_approval", "memory.write_approval",
+                   "mem_write_approval", "memory_approval"):
+            if _k in d:
+                mem_val = _parse_approval_bool(d.get(_k), None)
+                break
+        try:
+            _msec = d.get("memory")
+            if isinstance(_msec, dict) and "write_approval" in _msec:
+                mem_val = _parse_approval_bool(_msec.get("write_approval"), mem_val)
+        except Exception:
+            pass
+        sk_val = None
+        for _k in ("skills_write_approval", "skills.write_approval",
+                   "skill_write_approval", "skills_approval"):
+            if _k in d:
+                sk_val = _parse_approval_bool(d.get(_k), None)
+                break
+        try:
+            _ssec = d.get("skills")
+            if isinstance(_ssec, dict) and "write_approval" in _ssec:
+                sk_val = _parse_approval_bool(_ssec.get("write_approval"), sk_val)
+        except Exception:
+            pass
+        _agent_set_approvals(mem_val, sk_val)
+    except Exception:
+        pass
+    return None, {"ok": True, "rebooting": False}
+
+
+# ---------- backup (D5: one-JSON state export, secrets ALWAYS redacted) ----------
+# GET /api/backup body. The bot token (tg.json), wifi password, API keys and
+# the device auth token are NEVER included raw: config values reuse the
+# maskedKey shapes from /api/agent (or presence bools), and the gateway
+# section reuses gateway.status() which is presence-only by design.
+_BACKUP_CHATLOG_TAIL = 20
+
+
+def _collect_backup():
+    """Build the GET /api/backup payload. Never raises (fields degrade).
+
+    Shape: {ok, memory, user, chatlog_tail, chatlog_bytes, cron,
+    skills[{name,desc,content}], bundles, pending_counts, config (redacted),
+    gateway (presence-only), note}. No restore in v1: restore = /files
+    editor + reboot (documented on /system)."""
+    out = {"ok": True}
+    try:
+        import agent_tools as _at
+        try:
+            out["memory"] = _at.readMemoryFacts()[:3000]
+        except Exception:
+            out["memory"] = ""
+        try:
+            import memory as _mm
+            out["user"] = _mm.read_text("user")[:2000]
+        except Exception:
+            out["user"] = ""
+        try:
+            tail, nbytes = _read_log_tail(_at.LOG_PATH, _BACKUP_CHATLOG_TAIL)
+            out["chatlog_tail"] = tail
+            out["chatlog_bytes"] = nbytes
+        except Exception:
+            out["chatlog_tail"] = []
+            out["chatlog_bytes"] = 0
+    except Exception:
+        out["memory"] = ""
+        out["user"] = ""
+        out["chatlog_tail"] = []
+        out["chatlog_bytes"] = 0
+    try:
+        import cron as _cron
+        out["cron"] = _cron.list_jobs()
+    except Exception:
+        out["cron"] = {"success": False, "jobs": [], "count": 0}
+    try:
+        import skillstore as _sk
+        skills = []
+        try:
+            idx = _sk.index()
+        except Exception:
+            idx = []
+        for _e in idx:
+            try:
+                _n = _e.get("name", "") if isinstance(_e, dict) else ""
+                _v = _sk.view(_n)
+                if isinstance(_v, dict) and _v.get("success"):
+                    skills.append({"name": _v.get("name", _n),
+                                   "desc": _v.get("desc", ""),
+                                   "content": _v.get("content", "")})
+                else:
+                    skills.append({"name": _n,
+                                   "desc": _e.get("desc", "") if isinstance(_e, dict) else "",
+                                   "content": ""})
+            except Exception:
+                pass
+        out["skills"] = skills
+        try:
+            out["bundles"] = _sk.list_bundles()
+        except Exception:
+            out["bundles"] = []
+        try:
+            _sp = len(_sk.list_pending())
+        except Exception:
+            _sp = 0
+    except Exception:
+        out["skills"] = []
+        out["bundles"] = []
+        _sp = 0
+    try:
+        import memory as _mm2
+        try:
+            _mp = len(_mm2.list_pending())
+        except Exception:
+            _mp = 0
+    except Exception:
+        _mp = 0
+    out["pending_counts"] = {"memory": _mp, "skills": _sp}
+    try:
+        import config as _cfg
+        out["config"] = {
+            "wifi_ssid": _cfg.cfgSsid,
+            "api_endpoint": _cfg.cfgEndpoint,
+            "api_model": _cfg.cfgModel,
+            "api_key_masked": _cfg.maskedKey(_cfg.cfgApiKey),
+            "fallback_endpoint": getattr(_cfg, "cfgFallbackEndpoint", ""),
+            "fallback_model": getattr(_cfg, "cfgFallbackModel", ""),
+            "fallback_key_masked": _cfg.maskedKey(getattr(_cfg, "cfgFallbackKey", "")),
+            "auth_configured": len(_cfg.cfgAuthToken or "") > 0,
+            "tools_mask": int(getattr(_cfg, "gToolsMask", 0)),
+            "agent_max_iters": int(getattr(_cfg, "agent_max_iters", 3)),
+        }
+    except Exception:
+        out["config"] = {}
+    try:
+        import gateway as _gw
+        out["gateway"] = _gw.status()
+    except Exception:
+        out["gateway"] = {"success": False, "configured": False,
+                          "allow": [], "requests": [], "offset": 0}
+    out["note"] = ("Secrets redacted: api_key/wifi_pass/auth_token/bot_token "
+                   "are never in this payload (masked shapes or presence "
+                   "flags only). No restore in v1 — restore via /files + reboot.")
+    return out
 
 
 # Microdot imports are lazy so host-side unit tests can import helpers
@@ -992,43 +1375,130 @@ def get_app():
         return None
 
     # ---------- pages ----------
+    #
+    # The dashboard is a compiled React SPA (see ui/). Firmware ships exactly
+    # three web files:
+    #     www/index.html      the shell
+    #     www/assets/app.js   the whole app, one chunk
+    #     www/assets/app.css  the whole design system
+    # Everything else is an API call, so page routes are handled by serving
+    # index.html and letting the client router take over.
+
+    _WWW = "www/"
+    _MIME = {
+        "html": "text/html; charset=utf-8",
+        "js": "application/javascript; charset=utf-8",
+        "css": "text/css; charset=utf-8",
+        "svg": "image/svg+xml",
+        "json": "application/json",
+        "ico": "image/x-icon",
+        "txt": "text/plain; charset=utf-8",
+        "png": "image/png",
+        "webp": "image/webp",
+        "woff2": "font/woff2",
+        "md": "text/markdown; charset=utf-8",
+    }
+    # Files the UI may serve out of www/. Anything else 404s instead of
+    # exposing arbitrary device files through the web root.
+    _WWW_OK = ("index.html", "favicon.svg")
+    _WWW_DIRS_OK = ("assets/",)
+
+    def _www_safe(relpath):
+        """Normalise a request path to a safe www-relative path, or None."""
+        p = (relpath or "").strip()
+        while p.startswith("/"):
+            p = p[1:]
+        if not p or ".." in p or "\\" in p or p.startswith("."):
+            return None
+        if p in _WWW_OK:
+            return p
+        for d in _WWW_DIRS_OK:
+            if p.startswith(d):
+                name = p[len(d):]
+                if not name or "/" in name or name.startswith("."):
+                    return None
+                return p
+        return None
+
+    def _mime_for(name):
+        idx = name.rfind(".")
+        ext = name[idx + 1:].lower() if idx >= 0 else ""
+        return _MIME.get(ext, "application/octet-stream")
+
+    def _serve_www(relpath, cache=None, gz=False):
+        """Read a file from www/ and return it with explicit headers.
+
+        `gz=True` prefers `<path>.gz` when the client accepts gzip. MicroPython
+        cannot compress at request time, so the gzipped twin is prebuilt on the
+        host — it is the difference between a ~7 s and a ~2 s first load.
+        """
+        safe = _www_safe(relpath)
+        if safe is None:
+            return None
+        base = _WWW + safe
+        content_encoding = None
+        full = base
+        if gz:
+            try:
+                with open(base + ".gz", "rb") as f:
+                    data = f.read()
+                full = base + ".gz"
+                content_encoding = "gzip"
+            except Exception:
+                data = None
+        if not gz or content_encoding is None:
+            try:
+                with open(base, "rb") as f:
+                    data = f.read()
+            except Exception:
+                return None
+        if cache is None:
+            cache = "public, max-age=31536000, immutable" \
+                if safe.startswith("assets/") else "no-cache"
+        headers = {"Content-Type": _mime_for(safe),
+                   "Cache-Control": cache}
+        if content_encoding:
+            headers["Content-Encoding"] = content_encoding
+            headers["Vary"] = "Accept-Encoding"
+        return data, 200, headers
+
     @app.get("/")
     async def _index(request):
         if net.apMode and not config.cfgSsid:
             return Response.redirect("/wifi")
-        return send_file("www/chat.html")
+        res = _serve_www("index.html", cache="no-cache")
+        if res is None:
+            return "UI bundle missing. Deploy www/index.html and www/assets/.",
+        return res
 
-    @app.get("/setup")
-    async def _setup(request):
-        return send_file("www/setup.html")
+    def _accepts_gzip(request):
+        try:
+            enc = request.headers.get("Accept-Encoding", "") or ""
+        except Exception:
+            return False
+        if isinstance(enc, bytes):
+            try:
+                enc = enc.decode()
+            except Exception:
+                return False
+        return "gzip" in enc.lower()
 
-    @app.get("/wifi")
-    async def _wifi(request):
-        return send_file("www/wifi.html")
+    @app.get("/assets/<name>")
+    async def _asset(request, name):
+        res = _serve_www("assets/" + name, gz=_accepts_gzip(request))
+        if res is None:
+            return {"error": "not found"}, 404
+        return res
 
-    @app.get("/agent")
-    async def _agent(request):
-        return send_file("www/agent.html")
+    @app.get("/favicon.svg")
+    async def _favicon(request):
+        res = _serve_www("favicon.svg")
+        if res is None:
+            return {"error": "not found"}, 404
+        return res
 
-    @app.get("/update")
-    async def _update(request):
-        return send_file("www/update.html")
-
-    @app.get("/functions")
-    async def _funcs(request):
-        return send_file("www/functions.html")
-
-    @app.get("/docs")
-    async def _docs(request):
-        return send_file("www/docs.html")
-
-    @app.get("/files")
-    async def _files(request):
-        return send_file("www/files.html")
-
-    @app.get("/stats")
-    async def _stats(request):
-        return send_file("www/stats.html")
+    # SPA fallback is registered at the very end of get_app(), after every
+    # /api route — a catch-all declared earlier would swallow them.
 
     # ---------- status ----------
     @app.get("/api/status")
@@ -1100,6 +1570,13 @@ def get_app():
         except Exception:
             do_i2c = False
         return _collect_stats(do_i2c)
+
+    @app.get("/api/doctor")
+    async def _api_doctor(request):
+        na = need_auth(request)
+        if na:
+            return na
+        return _collect_doctor()
 
     @app.get("/api/auth")
     async def _get_auth(request):
@@ -1217,8 +1694,7 @@ def get_app():
         na = need_auth(request)
         if na:
             return na
-        return {"endpoint": config.cfgEndpoint, "model": config.cfgModel,
-                "api_key_masked": config.maskedKey(config.cfgApiKey)}
+        return _agent_get_payload()
 
     @app.post("/api/agent")
     async def _save_agent(request):
@@ -1228,16 +1704,11 @@ def get_app():
         d = _body_json(request)
         if d is None:
             return {"error": "invalid JSON"}, 400
-        ep = str(d.get("endpoint", "") or "").strip() or config.cfgEndpoint
-        key = str(d.get("apiKey", d.get("api_key", "")) or "").strip()
-        if not key:
-            key = config.cfgApiKey
-        model = str(d.get("model", "") or "").strip() or config.cfgModel or "gpt-4o-mini"
-        if not ep:
-            return {"error": "endpoint required"}, 400
-        config.saveAgentOnly(ep, key, model)
-        print("Saved agent: endpoint=%s model=%s (no reboot)" % (ep, model))
-        return {"ok": True, "rebooting": False}
+        err, res = _agent_apply_post(d)
+        if err:
+            return {"error": err}, 400
+        print("Saved agent: endpoint=%s model=%s (no reboot)" % (config.cfgEndpoint, config.cfgModel))
+        return res
 
     @app.get("/api/models")
     async def _get_models(request):
@@ -1277,7 +1748,22 @@ def get_app():
         if na:
             return na
         return {"wifi_ssid": config.cfgSsid, "endpoint": config.cfgEndpoint,
-                "model": config.cfgModel, "api_key_masked": config.maskedKey(config.cfgApiKey)}
+                "model": config.cfgModel, "api_key_masked": config.maskedKey(config.cfgApiKey),
+                "chat_entry_chars": int(getattr(config, "cfgChatEntryChars",
+                                                config.DEFAULT_CHAT_ENTRY_CHARS)),
+                "chat_entry_chars_min": int(config.CHAT_ENTRY_CHARS_MIN),
+                "chat_entry_chars_max": int(config.CHAT_ENTRY_CHARS_MAX),
+                "chat_log_max_kb": int(getattr(config, "cfgChatLogMaxKB",
+                                               config.DEFAULT_CHAT_LOG_MAX_KB)),
+                "chat_log_max_kb_min": int(config.CHAT_LOG_MAX_KB_MIN),
+                "chat_log_max_kb_max": int(config.CHAT_LOG_MAX_KB_MAX),
+                "chat_log_keep_kb": int(getattr(config, "cfgChatLogKeepKB",
+                                                config.DEFAULT_CHAT_LOG_KEEP_KB)),
+                "chat_log_keep_kb_min": int(config.CHAT_LOG_KEEP_KB_MIN),
+                "chat_restore_turns": int(getattr(config, "cfgChatRestoreTurns",
+                                                  config.DEFAULT_CHAT_RESTORE_TURNS)),
+                "chat_restore_turns_min": int(config.CHAT_RESTORE_TURNS_MIN),
+                "chat_restore_turns_max": int(config.CHAT_RESTORE_TURNS_MAX)}
 
     @app.post("/api/config")
     async def _save_config(request):
@@ -1287,8 +1773,36 @@ def get_app():
         d = _body_json(request)
         if d is None:
             return {"error": "invalid JSON"}, 400
+        # Chat-log retention (Config -> Chat history). Saved independently of
+        # the provider/WiFi flow, and never reboots the device.
+        chat_chars = None
+        for _k in ("chat_entry_chars", "chatlog_entry_chars", "chat_history_chars"):
+            if _k in d:
+                chat_chars = config.saveChatEntryChars(d.get(_k))
+                break
+        storage = None
+        if ("chat_log_max_kb" in d or "chat_log_keep_kb" in d
+                or "chat_restore_turns" in d):
+            def _pick(*names):
+                for _n in names:
+                    if _n in d:
+                        return d.get(_n)
+                return None
+            storage = config.saveChatStorage(
+                _pick("chat_log_max_kb", "chatlog_max_kb"),
+                _pick("chat_log_keep_kb", "chatlog_keep_kb"),
+                _pick("chat_restore_turns", "restore_turns", "chat_turns"))
         hasWifi = "ssid" in d or "password" in d
         hasAgent = "endpoint" in d or "apiKey" in d or "api_key" in d or "model" in d
+        if not hasWifi and not hasAgent:
+            if chat_chars is None and storage is None:
+                return {"error": "nothing to save"}, 400
+            out = {"ok": True, "rebooting": False}
+            if chat_chars is not None:
+                out["chat_entry_chars"] = chat_chars
+            if storage is not None:
+                out.update(storage)
+            return out
         if hasWifi and not hasAgent:
             # delegate to wifi handler logic
             ssid = str(d.get("ssid", "") or "").strip() or config.cfgSsid
@@ -1344,6 +1858,95 @@ def get_app():
         except Exception:
             pass
         return {"ok": True, "rebooting": True}
+
+    # ---------- schema-driven Config page ----------
+    # The JSON form API returns fields + current values (secrets masked). The
+    # YAML API is the raw editor: GET redacts by default, ?secrets=1 reveals,
+    # POST validates and rewrites config.yaml. Both keep the older flat
+    # /api/config and /api/agent endpoints working for Setup/Models/Keys.
+    @app.get("/api/config/form")
+    async def _get_config_form(request):
+        na = need_auth(request)
+        if na:
+            return na
+        try:
+            return config.form_payload()
+        except Exception as e:
+            return {"error": "config form failed: %s" % str(e)[:120]}, 500
+
+    @app.post("/api/config/form")
+    async def _save_config_form(request):
+        na = need_auth(request)
+        if na:
+            return na
+        d = _body_json(request)
+        if d is None:
+            return {"error": "invalid JSON"}, 400
+        values = d.get("values")
+        if not isinstance(values, dict):
+            return {"error": "values object required"}, 400
+        old_auth = config.cfgAuthToken
+        try:
+            out = config.save_form(values)
+        except ValueError as e:
+            return {"error": str(e)[:200]}, 400
+        except Exception as e:
+            return {"error": "save failed: %s" % str(e)[:120]}, 500
+        res = {"ok": True, "path": config.CONFIG_PATH,
+               "restart_required": bool(out.get("restart"))}
+        if config.cfgAuthToken != old_auth:
+            res["auth_token"] = config.cfgAuthToken
+            res["auth_changed"] = True
+        print("Saved config section via form (%d fields)" % len(values))
+        return res
+
+    @app.get("/api/config/yaml")
+    async def _get_config_yaml(request):
+        na = need_auth(request)
+        if na:
+            return na
+        want = ""
+        try:
+            want = str(request.args.get("secrets", "") or "").lower()
+        except Exception:
+            pass
+        reveal = want in ("1", "true", "yes", "on")
+        try:
+            text, redacted = config.yaml_text(redact=not reveal)
+        except Exception as e:
+            return {"error": "read failed: %s" % str(e)[:120]}, 500
+        return {"yaml": text, "path": config.CONFIG_PATH,
+                "redacted": bool(redacted), "version": config.CONFIG_VERSION}
+
+    @app.post("/api/config/yaml")
+    async def _save_config_yaml(request):
+        na = need_auth(request)
+        if na:
+            return na
+        d = _body_json(request)
+        if d is None:
+            return {"error": "invalid JSON"}, 400
+        text = d.get("yaml")
+        if not isinstance(text, str):
+            return {"error": "yaml text required"}, 400
+        if len(text) > 100000:
+            return {"error": "YAML too large (max 100KB)"}, 400
+        old_auth = config.cfgAuthToken
+        try:
+            out = config.save_raw_yaml(text)
+        except ValueError as e:
+            return {"error": "invalid YAML: %s" % str(e)[:240]}, 400
+        except Exception as e:
+            return {"error": "save failed: %s" % str(e)[:120]}, 500
+        res = {"ok": True, "path": config.CONFIG_PATH,
+               "masked_secrets_preserved": bool(out.get("masked")),
+               "restart_required": bool(out.get("restart")),
+               "raw_preserved": bool(out.get("raw_preserved"))}
+        if config.cfgAuthToken != old_auth:
+            res["auth_token"] = config.cfgAuthToken
+            res["auth_changed"] = True
+        print("Saved config.yaml (%d bytes)" % len(text))
+        return res
 
     # ---------- debug ----------
     @app.get("/api/debug-raw")
@@ -1413,12 +2016,35 @@ def get_app():
             hist = []
         import llm as _llm
         import agent_tools
+        # Phase 8 busy-guard: one upstream turn at a time (shared with the
+        # Telegram poller — concurrent TLS turns risk a heap wedge). The
+        # web key is mini:web:default; a second surface gets 429.
+        try:
+            import gateway as _gw_busy
+            _busy_ok, _ = _gw_busy.acquire("mini:web:default")
+        except Exception:
+            _gw_busy = None
+            _busy_ok = True
+        if not _busy_ok:
+            return {"error": "busy with another turn, try again shortly"}, 429
         out = {}
         # run blocking LLM loop in thread to keep server responsive (C++ blocks too)
         try:
-            reply = _llm.callLLMWithTools(msg, hist, out)
-        except Exception as e:
-            reply = "ERROR: %s" % str(e)[:200]
+            try:
+                _t0 = _doctor_now_ms()
+                try:
+                    reply = _llm.callLLMWithTools(msg, hist, out)
+                finally:
+                    # D3 counters: guarded, never breaks the turn.
+                    _stats_note_turn(_doctor_since_ms(_t0), _doctor_since_ms(_t0))
+            except Exception as e:
+                reply = "ERROR: %s" % str(e)[:200]
+        finally:
+            try:
+                if _gw_busy is not None:
+                    _gw_busy.release("mini:web:default")
+            except Exception:
+                pass
         print("[chat] q=%d chars -> a=%d chars tools=[%s]" % (len(msg), len(reply), out.get("tools_used", "")))
         if reply.startswith("ERROR:"):
             code = 500
@@ -1469,6 +2095,20 @@ def get_app():
             hist = []
 
         def _events():
+            # D3 counters for the streaming path (best-effort wall time from
+            # turn start to stream close; never breaks the stream). A streamed
+            # turn that yields need_tools falls back to /api/chat, which owns
+            # that turn and counts it again — once per request (see _STATS_*).
+            _t0 = _doctor_now_ms()
+            try:
+                for _chunk in _events_inner():
+                    yield _chunk
+            finally:
+                _stats_note_turn(_doctor_since_ms(_t0), _doctor_since_ms(_t0))
+
+        def _events_inner():
+            # Phase 8: this SSE path is intentionally OUTSIDE the shared
+            # busy-guard (chat only: /api/chat + Telegram hold the mutex).
             # True upstream streaming: stream:true + incremental chunked
             # decode, re-emitted to the browser as it arrives. This was
             # previously avoided because stream:true "wedged the generator
@@ -1483,7 +2123,8 @@ def get_app():
             req = {"model": config.cfgModel, "temperature": 0.7, "max_tokens": 800,
                    "stream": True, "messages": []}
             msgs = req["messages"]
-            msgs.append({"role": "system", "content": agent_tools.buildSystemPrompt()})
+            # Phase 9: tiered Mini prompt (one build per request = frozen).
+            msgs.append({"role": "system", "content": _system_prompt()})
             # Browser history is authoritative while the page is open; the
             # persisted log is the fallback for a fresh/refreshed page.
             if not hist:
@@ -1549,12 +2190,19 @@ def get_app():
         import agent_tools
         arr = []
         for i in range(len(agent_tools.TOOL_REGISTRY)):
+            try:
+                _t = agent_tools.TOOL_REGISTRY[i]
+                _dflt_off = bool(_t.get("default_off"))
+            except Exception:
+                _dflt_off = False
             arr.append({"name": agent_tools.toolNameAt(i),
                         "label": agent_tools.toolUiHintAt(i),
                         "description": agent_tools.toolDescriptionAt(i),
-                        "enabled": agent_tools.toolEnabledIdx(i)})
+                        "enabled": agent_tools.toolEnabledIdx(i),
+                        "toolset": tool_toolset(agent_tools.toolNameAt(i)),
+                        "default_off": _dflt_off})
         return {"tools": arr, "mask": config.gToolsMask,
-                "prompt_preview": agent_tools.buildSystemPrompt()[:600]}
+                "prompt_preview": _system_prompt()[:600]}
 
     @app.post("/api/tools")
     async def _save_tools(request):
@@ -1595,18 +2243,59 @@ def get_app():
             mem = agent_tools.readMemoryFacts()[:3000]
         except Exception:
             pass
-        # tail=N returns the last N chat-log lines (default 10, capped 60).
-        # The chat page uses ?tail=20 to rebuild the transcript after a refresh.
-        tail_n = 10
+        # tail=N returns the last N chat-log lines. The default comes from
+        # Config -> Chat history "Turns restored after reload" (x2 because a
+        # turn is a user line + an assistant line). An explicit ?tail= still
+        # overrides it for older clients/tools; hard cap 240 lines.
+        try:
+            import config as _cfg_mem
+            default_tail = max(2, int(_cfg_mem.cfgChatRestoreTurns) * 2)
+        except Exception:
+            default_tail = 40
+        tail_n = default_tail
         try:
             v = request.args.get("tail")
             if v is not None and str(v).strip():
-                tail_n = max(1, min(60, int(v)))
+                tail_n = max(1, min(240, int(v)))
         except Exception:
-            tail_n = 10
+            tail_n = default_tail
         tail, log_bytes = _read_log_tail(agent_tools.LOG_PATH, tail_n)
-        return {"memory": mem, "fs_ok": agent_tools.gFsOk,
-                "log_bytes": log_bytes, "log_tail": tail}
+        out = {"memory": mem, "fs_ok": agent_tools.gFsOk,
+               "log_bytes": log_bytes, "log_tail": tail}
+        # ?q= keyword search over current + rotated logs (Phase 4 sessions).
+        # Kept alongside ?tail=: tail restores the transcript, q recalls
+        # pre-/new turns that tail (current log only) cannot see.
+        try:
+            qv = request.args.get("q", "") if hasattr(request, "args") else ""
+            if not str(qv or "").strip():
+                qv = request.args.get("query", "") if hasattr(request, "args") else ""
+        except Exception:
+            qv = ""
+        qv = str(qv or "").strip()
+        if qv:
+            try:
+                lim = int(request.args.get("limit", "5") or "5")
+            except Exception:
+                lim = 5
+            try:
+                import sessions as _sess_q
+                out["search"] = _sess_q.search(qv, lim)
+            except Exception as e:
+                out["search"] = {"success": False,
+                                 "error": "search failed: %s" % str(e)[:80]}
+        # ?pending=1 lists staged write-approval records (Phase 2).
+        try:
+            pv = request.args.get("pending", "")
+            want_pending = str(pv).lower() in ("1", "true", "yes")
+        except Exception:
+            want_pending = False
+        if want_pending:
+            try:
+                import memory as _mm
+                out["pending"] = _mm.list_pending()
+            except Exception:
+                out["pending"] = []
+        return out
 
     @app.post("/api/memory")
     async def _save_memory(request):
@@ -1617,13 +2306,45 @@ def get_app():
         d = _body_json(request)
         if d is None:
             return {"error": "invalid JSON"}, 400
+        # Write-approval review ops (Phase 2): pending list + approve/reject
+        # by id or "all". Legacy clear_log/clear_memory/text flow below kept.
+        try:
+            op = str(d.get("op", "") or "").strip().lower()
+        except Exception:
+            op = ""
+        if op in ("pending", "list_pending") or d.get("pending") is True:
+            try:
+                import memory as _mm
+                return {"ok": True, "pending": _mm.list_pending()}
+            except Exception as e:
+                return {"error": "pending failed: %s" % str(e)[:80]}, 500
+        if op in ("approve", "reject"):
+            try:
+                import memory as _mm
+                sel = d.get("ids", d.get("id", "all"))
+                if isinstance(sel, str) and sel.strip().lower() == "all":
+                    sel = "all"
+                res = (_mm.approve(sel) if op == "approve" else _mm.reject(sel))
+                res["ok"] = bool(res.get("success"))
+                return res
+            except Exception as e:
+                return {"error": "%s failed: %s" % (op, str(e)[:80])}, 500
         out = {}
         if d.get("clear_log"):
+            # Phase 4: clear = /new rotation — previous log kept as
+            # chatlog.prev.jsonl (single generation, flash-cheap), fresh
+            # empty current log. Saved memory facts (memory.txt/user.txt),
+            # skills and pending queues are untouched by design.
             try:
-                import os
-                os.remove(agent_tools.LOG_PATH)
-            except OSError:
-                pass
+                import sessions as _sess_r
+                _rr = _sess_r.rotate()
+                out["rotated"] = bool(_rr.get("rotated"))
+            except Exception:
+                try:
+                    import os
+                    os.remove(agent_tools.LOG_PATH)
+                except OSError:
+                    pass
             out["cleared_log"] = True
         if d.get("clear_memory"):
             try:
@@ -1632,6 +2353,24 @@ def get_app():
             except OSError:
                 pass
             out["cleared_memory"] = True
+        # Phase 9: user-store wipe, symmetric with the device-store clear.
+        # Accepts {"clear_user":true} or {"op":"clear_user"}.
+        try:
+            _want_user = bool(d.get("clear_user")) or op == "clear_user"
+        except Exception:
+            _want_user = False
+        if _want_user:
+            try:
+                import memory as _mm_user
+                _upath = _mm_user.USER_PATH
+            except Exception:
+                _upath = "user.txt"
+            try:
+                import os
+                os.remove(_upath)
+            except OSError:
+                pass
+            out["cleared_user"] = True
         t = str(d.get("text", "") or "")
         if t:
             try:
@@ -1644,6 +2383,208 @@ def get_app():
         except Exception:
             out["memory"] = ""
         return out
+
+    # ---------- skills (Phase 3: L0 index in prompt, full text on demand) ----------
+    @app.get("/api/skills")
+    async def _get_skills(request):
+        na = need_auth(request)
+        if na:
+            return na
+        import skillstore as _sk
+        try:
+            qn = request.args.get("name", "") if hasattr(request, "args") else ""
+        except Exception:
+            qn = ""
+        qn = str(qn or "").strip()
+        if qn:
+            if qn.startswith("bundle:"):
+                return _sk.expand_bundle(qn[7:].strip())
+            return _sk.view(qn)
+        out = {"skills": _sk.index(), "bundles": _sk.list_bundles()}
+        try:
+            out["count"] = len(out["skills"])
+        except Exception:
+            out["count"] = 0
+        try:
+            pv = request.args.get("pending", "") if hasattr(request, "args") else ""
+            want_pending = str(pv).lower() in ("1", "true", "yes")
+        except Exception:
+            want_pending = False
+        if want_pending:
+            try:
+                out["pending"] = _sk.list_pending()
+            except Exception:
+                out["pending"] = []
+        return out
+
+    @app.post("/api/skills")
+    async def _post_skills(request):
+        na = need_auth(request)
+        if na:
+            return na
+        import skillstore as _sk
+        d = _body_json(request)
+        if d is None:
+            return {"error": "invalid JSON"}, 400
+        try:
+            act = str(d.get("action", d.get("op", "list")) or "list").strip().lower()
+        except Exception:
+            act = "list"
+        if act in ("pending", "list_pending") or d.get("pending") is True:
+            try:
+                return {"ok": True, "pending": _sk.list_pending(),
+                        "skills": _sk.index(), "bundles": _sk.list_bundles()}
+            except Exception as e:
+                return {"error": "pending failed: %s" % str(e)[:80]}, 500
+        if act in ("approve", "reject"):
+            try:
+                sel = d.get("ids", d.get("id", "all"))
+                if isinstance(sel, str) and sel.strip().lower() == "all":
+                    sel = "all"
+                res = (_sk.approve(sel) if act == "approve" else _sk.reject(sel))
+                res["ok"] = bool(res.get("success"))
+                return res
+            except Exception as e:
+                return {"error": "%s failed: %s" % (act, str(e)[:80])}, 500
+        if act in ("list", "index", "get"):
+            name = str(d.get("name", "") or "").strip()
+            if name:
+                if name.startswith("bundle:"):
+                    return _sk.expand_bundle(name[7:].strip())
+                return _sk.view(name)
+            return {"ok": True, "skills": _sk.index(),
+                    "bundles": _sk.list_bundles()}
+        if act == "create":
+            res = _sk.create(str(d.get("name", "") or ""),
+                             str(d.get("content", d.get("text", "")) or ""))
+            res["ok"] = bool(res.get("success"))
+            return res
+        if act in ("stage_draft", "stage", "propose"):
+            res = _sk.propose(str(d.get("name", "") or ""),
+                              str(d.get("content", d.get("text", "")) or ""))
+            res["ok"] = bool(res.get("success"))
+            return res
+        if act == "patch":
+            res = _sk.patch(str(d.get("name", "") or ""),
+                            str(d.get("old_text", d.get("old", "")) or ""),
+                            str(d.get("content", d.get("new_text", d.get("new", ""))) or ""))
+            res["ok"] = bool(res.get("success"))
+            return res
+        if act == "delete":
+            res = _sk.delete(str(d.get("name", "") or ""))
+            res["ok"] = bool(res.get("success"))
+            return res
+        return {"error": ("Unknown action '%s'. Use: list, get, create, patch, delete, "
+                          "stage_draft, pending, approve, reject" % act[:40])}, 400
+
+    # ---------- sessions (Phase 4: journey feed + trajectory export) ----------
+    # Journey/trajectory accept the auth token as ?token= (plain <a> links
+    # cannot set headers — same pattern as /api/files/download).
+    def _journey_authed(request):
+        if is_authenticated(request):
+            return True
+        try:
+            q = request.args.get("token", "") if hasattr(request, "args") else ""
+            if q and q.strip() == config.cfgAuthToken and len(config.cfgAuthToken or "") > 0:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _journey_need_auth(request):
+        if _journey_authed(request):
+            return None
+        return {"error": "auth required"}, 401
+
+    @app.get("/api/journey")
+    async def _get_journey(request):
+        na = _journey_need_auth(request)
+        if na:
+            return na
+        import sessions as _sess_j
+        return _sess_j.journey()
+
+    @app.get("/api/trajectory")
+    async def _get_trajectory(request):
+        na = _journey_need_auth(request)
+        if na:
+            return na
+        try:
+            fmt = request.args.get("format", "sharegpt") if hasattr(request, "args") else "sharegpt"
+        except Exception:
+            fmt = "sharegpt"
+        fmt = str(fmt or "sharegpt").strip().lower()
+        if fmt != "sharegpt":
+            return {"error": ("unknown format '%s'. Only format=sharegpt is supported" % fmt[:40])}, 400
+        import sessions as _sess_t
+        return _sess_t.trajectory()
+
+    # ---------- cron (Phase 5: <=5 scheduled agent turns, 60s tick) ----------
+    @app.get("/api/cron")
+    async def _get_cron(request):
+        na = need_auth(request)
+        if na:
+            return na
+        import cron as _cron
+        return _cron.list_jobs()
+
+    @app.post("/api/cron")
+    async def _post_cron(request):
+        na = need_auth(request)
+        if na:
+            return na
+        import cron as _cron
+        d = _body_json(request)
+        if d is None:
+            return {"error": "invalid JSON"}, 400
+        # Same ops as the `cron` tool (add/list/edit/pause/resume/remove/run_now).
+        # run_now runs a live agent turn inline (TLS, seconds) — like /api/chat.
+        res = _cron.handle(d)
+        try:
+            res["ok"] = bool(res.get("success"))
+        except Exception:
+            pass
+        return res
+
+    # ---------- gateway (Phase 8: Telegram pairing + status) ----------
+    @app.get("/api/gateway")
+    async def _get_gateway(request):
+        na = need_auth(request)
+        if na:
+            return na
+        try:
+            import gateway as _gw
+            return _gw.status()
+        except Exception as e:
+            return {"error": "gateway unavailable: %s" % str(e)[:80]}, 500
+
+    @app.post("/api/gateway")
+    async def _post_gateway(request):
+        na = need_auth(request)
+        if na:
+            return na
+        try:
+            import gateway as _gw
+        except Exception as e:
+            return {"error": "gateway unavailable: %s" % str(e)[:80]}, 500
+        d = _body_json(request)
+        if d is None:
+            return {"error": "invalid JSON"}, 400
+        # Same ops as the pairing API (status/allow/deny/reset_offset).
+        # The bot token is file-only (edit tg.json on the device) and any
+        # token key in the body is ignored, never stored.
+        res = _gw.handle(d)
+        try:
+            res["ok"] = bool(res.get("success"))
+        except Exception:
+            pass
+        if not res.get("success"):
+            err = str(res.get("error", "gateway failed"))
+            code = 400
+            if "id is required" in err:
+                code = 400
+            return res, code
+        return res
 
     # ---------- console logs (ring buffer fed by logbuf.install()) ----------
     @app.get("/api/logs")
@@ -1782,12 +2723,36 @@ def get_app():
         content = d.get("content", "")
         if not isinstance(content, str):
             return {"error": "content must be a string"}, 400
+        # config.yaml is hand-editable from the Files page too. Validate it
+        # before writing and reload globals immediately so the edit applies
+        # without a reboot (the Config page's YAML editor does the same).
+        if norm == config.CONFIG_PATH:
+            try:
+                import yamlish
+                parsed = yamlish.loads(content)
+                if not isinstance(parsed, dict) or not parsed:
+                    return {"error": "config.yaml must be a non-empty YAML mapping"}, 400
+            except Exception as e:
+                return {"error": "invalid config.yaml: %s" % str(e)[:160]}, 400
+        try:
+            import checkpoint as _cp_save
+            _cp_save.backup(norm)  # best-effort .bak; write proceeds regardless
+        except Exception:
+            pass
         err = _fs_write_text(norm, content)
         if err:
             code = 400
             if err.startswith("file too large"):
                 code = 413
             return {"error": err}, code
+        if norm == config.CONFIG_PATH:
+            try:
+                config.loadConfig()
+            except Exception as e:
+                return {"error": "saved but config reload failed: %s"
+                                 % str(e)[:120]}, 500
+            return {"ok": True, "path": "/" + norm,
+                    "size": len(content.encode("utf-8")), "reloaded": True}
         return {"ok": True, "path": "/" + norm, "size": len(content.encode("utf-8"))}
 
     @app.post("/api/files/mkdir")
@@ -1924,6 +2889,11 @@ def get_app():
             if err:
                 return {"error": err}, 400
             try:
+                import checkpoint as _cp_up
+                _cp_up.backup(norm)  # best-effort .bak; write proceeds
+            except Exception:
+                pass
+            try:
                 with open(_fs_full(norm), "wb") as f:
                     f.write(data)
                 saved.append("/" + norm)
@@ -1933,7 +2903,66 @@ def get_app():
             return {"error": "no acceptable files"}, 400
         return {"ok": True, "saved": saved, "path": "/" + dest if dest else "/"}
 
+    # ---------- rollback (Phase 7: .bak snapshots kept by writes/uploads) ----------
+    @app.get("/api/rollback")
+    async def _rollback_list(request):
+        na = need_auth(request)
+        if na:
+            return na
+        import checkpoint as _cp
+        return _cp.list_backups()
+
+    @app.post("/api/rollback")
+    async def _rollback_post(request):
+        na = need_auth(request)
+        if na:
+            return na
+        import checkpoint as _cp
+        d = _body_json(request)
+        if d is None:
+            return {"error": "invalid JSON"}, 400
+        # D5 prune: {"op": "prune", "keep": N} or {"prune": true, "keep": N}
+        # or {"prune": {"keep": N}}. Keeps the N newest .bak snapshots,
+        # deletes the rest, reports the freed count. Default keep = 4.
+        try:
+            _op = str(d.get("op", "") or "").strip().lower()
+        except Exception:
+            _op = ""
+        _prune_arg = d.get("prune", None)
+        if _op == "prune" or _prune_arg is not None:
+            try:
+                if isinstance(_prune_arg, dict):
+                    _keep = _prune_arg.get("keep", d.get("keep", 4))
+                else:
+                    _keep = d.get("keep", 4)
+            except Exception:
+                _keep = 4
+            res = _cp.prune(_keep)
+            try:
+                res["ok"] = bool(res.get("success"))
+            except Exception:
+                pass
+            if not res.get("success"):
+                return res, 400
+            return res
+        res = _cp.rollback(d.get("path", ""))
+        try:
+            res["ok"] = bool(res.get("success"))
+        except Exception:
+            pass
+        if not res.get("success"):
+            err = str(res.get("error", "rollback failed"))
+            code = 404 if "no backup" in err else 400
+            return res, code
+        return res
+
     # ---------- reset ----------
+    # VERIFIED SEMANTICS (D5): POST /api/reset is a FACTORY-WIPE + reboot —
+    # it deletes agent_tools.LOG_PATH (chatlog.jsonl), agent_tools.MEM_PATH
+    # (memory.txt) and config.CONFIG_PATH (config.yaml: WiFi creds, API key,
+    # auth token), THEN machine.reset(). Legacy config.json / config.json.bak
+    # are removed too. No dashboard button wires to it; the /system Restart
+    # card uses POST /api/reboot (soft reset only).
     @app.post("/api/reset")
     async def _reset(request):
         na = need_auth(request)
@@ -1942,7 +2971,10 @@ def get_app():
         import agent_tools
         try:
             import os
-            for p in (agent_tools.LOG_PATH, agent_tools.MEM_PATH, config.CONFIG_PATH):
+            paths = [agent_tools.LOG_PATH, agent_tools.MEM_PATH,
+                     config.CONFIG_PATH, config.LEGACY_CONFIG_PATH,
+                     config.LEGACY_BACKUP_PATH]
+            for p in paths:
                 try:
                     os.remove(p)
                 except OSError:
@@ -1962,6 +2994,56 @@ def get_app():
         except Exception:
             pass
         return {"ok": True, "rebooting": True}
+
+    # ---------- reboot (D5: soft reset ONLY — wipes nothing) ----------
+    # Unlike /api/reset (factory-wipe + reboot, see above), this only
+    # reboots: config.yaml, memory.txt/user.txt, chatlog.jsonl, cron.json
+    # and tg.json all survive. The /system Restart card uses this endpoint.
+    @app.post("/api/reboot")
+    async def _reboot(request):
+        na = need_auth(request)
+        if na:
+            return na
+
+        async def _rb2():
+            await asyncio.sleep(0.5)
+            try:
+                import machine
+                machine.reset()
+            except Exception:
+                pass
+        try:
+            asyncio.create_task(_rb2())
+        except Exception:
+            pass
+        return {"ok": True, "rebooting": True}
+
+    # ---------- backup (D5: redacted state export, ?token= download) ----------
+    # Backup downloads use plain <a> links which cannot set headers — accept
+    # the same token as a query param (same pattern as /api/files/download
+    # and /api/journey). fetch() callers use the header.
+    def _backup_authed(request):
+        if is_authenticated(request):
+            return True
+        try:
+            q = request.args.get("token", "") if hasattr(request, "args") else ""
+            if q and q.strip() == config.cfgAuthToken and len(config.cfgAuthToken or "") > 0:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _backup_need_auth(request):
+        if _backup_authed(request):
+            return None
+        return {"error": "auth required"}, 401
+
+    @app.get("/api/backup")
+    async def _get_backup(request):
+        na = _backup_need_auth(request)
+        if na:
+            return na
+        return _collect_backup()
 
     # ---------- update (.py file upload, MicroPython-native) ----------
     async def _handle_update_upload(request):
@@ -1994,14 +3076,31 @@ def get_app():
             if not base or base.startswith(".") or ".." in base:
                 continue
             low = base.lower()
-            if base in ("config.json", "memory.txt", "chatlog.jsonl", "config.json.tmp"):
-                continue  # never overwrite settings/memory via /update
-            allowed = low.endswith((".py", ".html", ".json", ".txt", ".mpy"))
+            if base in ("config.yaml", "config.yaml.tmp", "config.json",
+                          "config.json.bak", "config.json.tmp", "memory.txt",
+                          "user.txt", "chatlog.jsonl", "chatlog.prev.jsonl",
+                          "cron.json", "tg.json", "pending_mem.json",
+                          "bundles.json"):
+                continue  # never overwrite settings/memory/skills-bundle state via /update
+            if low.endswith(".bak"):
+                continue  # checkpoint snapshots are managed via /api/rollback
+            # NOTE (Phase 3): skills/*.md and pending_skills/*.json are NOT in this
+            # tuple on purpose and still unreachable: /update strips directories
+            # (basename-only) so pending_skills/ cannot be addressed, and .md is not
+            # an accepted extension — skills are managed via /api/skills only.
+            allowed = low.endswith((".py", ".html", ".json", ".txt", ".mpy",
+                                    ".js", ".css", ".svg", ".md"))
             if not allowed:
                 # keep original .bin behaviour: reject with clear message
-                return {"error": "only .py/.html/.json/.txt/.mpy accepted (got %s)" % base[:40]}, 400
-            # destination: www/ for html, root otherwise
-            dest = ("www/" + base) if low.endswith(".html") else base
+                return {"error": "only .py/.html/.json/.txt/.mpy/.js/.css/.svg/.md accepted (got %s)" % base[:40]}, 400
+            # destination: web assets into www/assets/, other html into www/,
+            # code stays at the filesystem root.
+            if low.endswith((".js", ".css")):
+                dest = "www/assets/" + base
+            elif low.endswith((".html", ".svg", ".md")):
+                dest = "www/" + base
+            else:
+                dest = base
             if dest in ("boot.py", "main.py", "config.py", "agent_tools.py", "llm.py",
                         "net.py", "server.py") or dest.startswith("tools/") or dest.startswith("www/"):
                 pass  # allowed: code + pages
@@ -2013,8 +3112,11 @@ def get_app():
                 return {"error": "read failed: %s" % str(e)[:80]}, 500
             if not data:
                 continue
-            if len(data) > 200000:
-                return {"error": "%s too large (%dB, max 200KB)" % (base, len(data))}, 400
+            # Bundles are big; everything else keeps the old 200 KB ceiling.
+            max_bytes = 900000 if low.endswith((".js", ".css")) else 200000
+            if len(data) > max_bytes:
+                return {"error": "%s too large (%dB, max %dKB)"
+                                 % (base, len(data), max_bytes // 1000)}, 400
             try:
                 with open(dest, "wb") as f:
                     f.write(data)
@@ -2068,6 +3170,41 @@ def get_app():
                 return res, 400
             return res
 
+    # ---------- UI bundle upload ----------
+    # Convenience endpoint so a rebuilt dashboard can be pushed without a
+    # serial cable:
+    #     curl -X POST --data-binary @www/assets/app.js \
+    #          -H "Authorization: Bearer <token>" \
+    #          "http://<device>/api/ui/asset?path=assets/app.js"
+    # Only the three web-root files are writable, and the body size is capped
+    # just above a real bundle.
+    @app.post("/api/ui/asset")
+    async def _ui_asset(request):
+        na = need_auth(request)
+        if na:
+            return na
+        try:
+            target = request.args.get("path", "") if hasattr(request, "args") else ""
+        except Exception:
+            target = ""
+        safe = _www_safe(str(target or ""))
+        if safe is None:
+            return {"error": "path must be index.html, favicon.svg or assets/<file>"}, 400
+        raw = request.body
+        if raw is None:
+            return {"error": "empty body"}, 400
+        if isinstance(raw, str):
+            raw = raw.encode()
+        if len(raw) > 900000:
+            return {"error": "too large (%dB, max 900000)" % len(raw)}, 413
+        try:
+            with open(_WWW + safe, "wb") as f:
+                f.write(raw)
+        except Exception as e:
+            return {"error": "write failed: %s" % str(e)[:80]}, 500
+        print("[ui] wrote %s (%d bytes)" % (safe, len(raw)))
+        return {"ok": True, "path": "/" + safe, "size": len(raw)}
+
     # ---------- captive portal ----------
     @app.errorhandler(404)
     async def _not_found(request):
@@ -2079,7 +3216,22 @@ def get_app():
                 pass
             if "192.168.4.1" not in host:
                 return Response.redirect("http://192.168.4.1/wifi")
-        return "Not found. Try /, /files, /stats, /setup, /wifi, /agent, /functions, /docs, /update, /api/status, /api/stats, /api/logs", 404
+        return "Not found. Try /, /files, /stats, /journey, /setup, /wifi, /agent, /functions, /docs, /update, /keys, /api/status, /api/stats, /api/journey, /api/trajectory, /api/logs", 404
+
+    # ---------- SPA fallback (must be last) ----------
+    # Every non-API path renders the shell; the client router owns the path.
+    # Registered after all /api routes so they always win.
+    @app.get("/<path:path>")
+    async def _spa(request, path):
+        if path.startswith("api/"):
+            return {"error": "not found"}, 404
+        res = _serve_www(path)
+        if res is not None:
+            return res
+        res = _serve_www("index.html", cache="no-cache")
+        if res is None:
+            return "UI bundle missing. Deploy www/index.html and www/assets/.",
+        return res
 
     _app = app
     return app

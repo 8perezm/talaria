@@ -48,6 +48,40 @@ async def _wifi_watchdog():
             print("watchdog:", e)
 
 
+async def _cron_tick_loop():
+    # Lazy import: a broken cron.py must never break boot. Any per-tick
+    # failure is caught below so a cron crash can NEVER kill the server.
+    try:
+        import cron as _cron
+    except Exception as e:
+        print("[cron] disabled:", e)
+        return
+    while True:
+        await asyncio.sleep(60)
+        try:
+            _cron.run_due()
+        except Exception as e:
+            print("[cron] tick failed:", e)
+
+
+async def _tg_poll_loop():
+    # Lazy import: a missing/broken gateway.py must never break boot. Any
+    # per-pass failure is caught below so a Telegram crash can NEVER kill
+    # the server. tg_loop() is one poll pass (dormant when no bot_token);
+    # the ~30s cadence lives here, mirroring _cron_tick_loop.
+    try:
+        import gateway as _gw
+    except Exception as e:
+        print("[tg] disabled:", e)
+        return
+    while True:
+        await asyncio.sleep(30)
+        try:
+            _gw.tg_loop()
+        except Exception as e:
+            print("[tg] pass failed:", e)
+
+
 async def _amain():
     ok = net.connectWiFi(15000)
     if not ok:
@@ -87,19 +121,24 @@ async def _amain():
     import server
     app = server.get_app()
     asyncio.create_task(_wifi_watchdog())
+    asyncio.create_task(_cron_tick_loop())
+    asyncio.create_task(_tg_poll_loop())
     # Microdot asyncio: prefer start_server so our tasks keep running.
-    try:
-        await app.start_server(host="0.0.0.0", port=80)
-    except AttributeError:
-        # old/sync API — blocks; watchdog/DNS already scheduled where possible
-        app.run(host="0.0.0.0", port=80)
-    except Exception as e:
-        print("server failed:", e)
-        # last-resort blocking run
+    # If the server loop ever returns (a handler error that escaped Microdot,
+    # or a transient lwIP failure), restart it instead of silently dropping
+    # to the REPL — a device that answers "connection refused" until someone
+    # presses RESET is indistinguishable from a crash.
+    while True:
         try:
+            await app.start_server(host="0.0.0.0", port=80)
+            print("server loop returned; restarting in 2s")
+        except AttributeError:
+            # old/sync API — blocks; watchdog/DNS already scheduled where possible
             app.run(host="0.0.0.0", port=80)
-        except Exception as e2:
-            print("run failed:", e2)
+            print("sync server returned; restarting in 2s")
+        except Exception as e:
+            print("server failed:", e)
+        await asyncio.sleep(2)
 
 
 try:

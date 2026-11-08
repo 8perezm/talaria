@@ -10,6 +10,18 @@ from tools.tool_mem_read import TOOL as Tool_mem_read
 from tools.tool_restart import TOOL as Tool_restart_device
 from tools.tool_blink import TOOL as Tool_blink
 from tools.tool_web_fetch import TOOL as Tool_web_fetch
+from tools.tool_memory import TOOL as Tool_memory
+from tools.tool_skills_list import TOOL as Tool_skills_list
+from tools.tool_skill_view import TOOL as Tool_skill_view
+from tools.tool_session_search import TOOL as Tool_session_search
+from tools.tool_cron import TOOL as Tool_cron
+from todo import TOOL as Tool_todo
+from delegate import TOOL as Tool_delegate_task
+from exec_py import TOOL as Tool_exec_py
+from read_file import TOOL as Tool_read_file
+from write_file import TOOL as Tool_write_file
+from patch_file import TOOL as Tool_patch_file
+from search_files import TOOL as Tool_search_files
 
 TOOL_REGISTRY = [
     Tool_get_status,
@@ -22,6 +34,18 @@ TOOL_REGISTRY = [
     Tool_restart_device,
     Tool_blink,
     Tool_web_fetch,
+    Tool_memory,
+    Tool_skills_list,
+    Tool_skill_view,
+    Tool_session_search,
+    Tool_cron,
+    Tool_todo,
+    Tool_delegate_task,
+    Tool_exec_py,
+    Tool_read_file,
+    Tool_write_file,
+    Tool_patch_file,
+    Tool_search_files,
 ]
 
 TOOL_COUNT = len(TOOL_REGISTRY)

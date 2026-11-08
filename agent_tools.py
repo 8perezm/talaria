@@ -12,14 +12,30 @@ except ImportError:
 
 LOG_PATH = "chatlog.jsonl"
 MEM_PATH = "memory.txt"
-LOG_MAX_BYTES = 32768
-MEM_MAX_BYTES = 4096
+# Rolling chat log budget. 320 KB is ~1.6% of the 16 MB flash and holds a
+# 20-turn conversation even when every message hits the default 4000-char
+# cap (40 messages x 4000 = 160 KB + JSON overhead). Rotation keeps the
+# newest 200 KB, which still fits 20 max-cap turns.
+LOG_MAX_BYTES = 327680
+LOG_KEEP_BYTES = 204800
+# Legacy alias of the device-store cap; memory.py owns the caps now.
+MEM_MAX_BYTES = 2200
 
 # Filled by tools/registry.py import (avoids circular import at module load).
 TOOL_REGISTRY = []
 TOOL_COUNT = 0
 gFsOk = True
 gRestartPending = False
+
+# Phase 6 delegation: when not None, only these tool names may run via
+# execTool (child-turn restriction set by delegate.py, always restored via
+# try/finally). Parent turns leave it None (no restriction).
+_ACTIVE_TOOL_ALLOW = None
+
+# D3 usage counters: per-tool execution counts (RAM dict, reset on boot).
+# Incremented once per execTool call — execTool is the single choke point
+# for every tool execution (chat turns, cron run_now, Telegram turns).
+_TOOL_CALL_COUNTS = {}
 
 
 def _fs_size(path):
@@ -94,93 +110,142 @@ def toolDescriptionAt(i):
 
 
 def readMemoryFacts():
+    # Compat shim over memory.py (device store), which owns the files.
     try:
-        with open(MEM_PATH, "r") as f:
-            s = f.read()
-    except OSError:
+        import memory as _mem
+        return _mem.read_text("device")
+    except Exception:
         return ""
-    if len(s) > MEM_MAX_BYTES:
-        s = s[len(s) - MEM_MAX_BYTES:]
-    return s
 
 
 def appendMemoryFact(text):
-    if not text:
-        return False
-    cur = readMemoryFacts()
-    line = text.strip().replace("\n", " ")
-    if len(line) > 500:
-        line = line[:500]
-    if not line:
-        return False
-    cur += "- " + line + "\n"
-    while len(cur) > MEM_MAX_BYTES:
-        nl = cur.find("\n")
-        if nl < 0:
-            cur = cur[len(cur) - MEM_MAX_BYTES:]
-            break
-        cur = cur[nl + 1:]
+    # Compat shim over memory.py (device store add). Returns True on
+    # success, exact-duplicate, or approval-staged writes.
     try:
-        with open(MEM_PATH, "w") as f:
-            f.write(cur)
-    except OSError:
+        import memory as _mem
+        r = _mem.add("device", text)
+        return bool(r.get("success"))
+    except Exception:
         return False
-    return True
+
+
+def _chat_entry_chars():
+    """Per-message cap for chatlog.jsonl (Config page: chat history)."""
+    try:
+        import config
+        return int(getattr(config, "cfgChatEntryChars",
+                           config.DEFAULT_CHAT_ENTRY_CHARS))
+    except Exception:
+        return 4000
+
+
+def _log_budgets():
+    """(rotate_at_bytes, keep_bytes) from Config -> Chat history."""
+    try:
+        import config
+        m = int(getattr(config, "cfgChatLogMaxKB", LOG_MAX_BYTES // 1024))
+        k = int(getattr(config, "cfgChatLogKeepKB", LOG_KEEP_BYTES // 1024))
+        return m * 1024, k * 1024
+    except Exception:
+        return LOG_MAX_BYTES, LOG_KEEP_BYTES
+
+
+def _rotate_chatlog(max_bytes, keep_bytes, block=16384):
+    """Trim the log to its newest keep_bytes, block by block.
+
+    The old rotation did `f.read()` of the whole log and then wrote a slice
+    back. That is fine at 32 KB but not once the log can be hundreds of KB
+    (or live on USB storage): peak RAM would be the log plus the slice. This
+    copies the tail through a temp file in fixed-size blocks, then swaps it
+    in, so RAM stays flat at one block.
+    """
+    import os
+    try:
+        sz = _fs_size(LOG_PATH)
+    except Exception:
+        return
+    if sz <= max_bytes:
+        return
+    start = sz - keep_bytes
+    if start < 0:
+        start = 0
+    tmp = LOG_PATH + ".tmp"
+    wrote = 0
+    try:
+        with open(LOG_PATH, "rb") as src:
+            with open(tmp, "wb") as dst:
+                src.seek(start)
+                if start > 0:
+                    # Drop the partial first line produced by the byte offset.
+                    while True:
+                        b = src.read(block)
+                        if not b:
+                            break
+                        i = b.find(b"\n")
+                        if i >= 0:
+                            tail = b[i + 1:]
+                            if tail:
+                                dst.write(tail)
+                                wrote += len(tail)
+                            break
+                while True:
+                    b = src.read(block)
+                    if not b:
+                        break
+                    dst.write(b)
+                    wrote += len(b)
+        if wrote:
+            try:
+                os.remove(LOG_PATH)
+            except OSError:
+                pass
+            os.rename(tmp, LOG_PATH)
+        else:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    except Exception:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
 
 
 def appendChatLog(user, asst):
     # one open/close per turn, minimal flash wear
+    cap = _chat_entry_chars()
     try:
-        sz = _fs_size(LOG_PATH)
-        if sz > LOG_MAX_BYTES:
-            try:
-                with open(LOG_PATH, "r") as r:
-                    all_text = r.read()
-            except OSError:
-                all_text = ""
-            if len(all_text) > 16384:
-                all_text = all_text[len(all_text) - 16384:]
-            nl = all_text.find("\n")
-            if nl >= 0:
-                all_text = all_text[nl + 1:]
-            with open(LOG_PATH, "w") as w:
-                w.write(all_text)
+        max_b, keep_b = _log_budgets()
+        if _fs_size(LOG_PATH) > max_b:
+            _rotate_chatlog(max_b, keep_b)
     except Exception:
         pass
     try:
         with open(LOG_PATH, "a") as f:
-            f.write(json.dumps({"r": "user", "c": (user or "")[:1500]}) + "\n")
-            f.write(json.dumps({"r": "assistant", "c": (asst or "")[:1500]}) + "\n")
+            f.write(json.dumps({"r": "user", "c": (user or "")[:cap]}) + "\n")
+            f.write(json.dumps({"r": "assistant", "c": (asst or "")[:cap]}) + "\n")
     except OSError:
         return False
     return True
 
 
 def injectRecentLog(msgs, curUser, maxMsgs=8):
-    """Append last N persisted turns to msgs list. Returns count added."""
+    """Append last N persisted turns to msgs list. Returns count added.
+
+    Phase 4 note: this reads the CURRENT chatlog.jsonl only (last-8). It is
+    intentionally NOT cross-rotation recall — pre-/new history is found via
+    sessions.search() (session_search tool / GET /api/memory?q=...).
+
+    Uses the shared chunked tail reader: only the last few lines are read, so
+    this fallback stays cheap even when the rolling log is large."""
     try:
-        with open(LOG_PATH, "r") as f:
-            all_text = f.read()
-    except OSError:
+        import fsutil
+        entries, _ = fsutil.read_jsonl_tail(LOG_PATH, maxMsgs)
+    except Exception:
         return 0
-    lines = all_text.split("\n")
-    # count non-empty for start calc
-    total = sum(1 for ln in lines if ln.strip())
-    start = total - maxMsgs if total > maxMsgs else 0
     added = 0
-    idx = 0
-    for ln in lines:
-        s = ln.strip()
-        if not s:
-            continue
-        if idx < start:
-            idx += 1
-            continue
-        idx += 1
-        try:
-            d = json.loads(s)
-        except Exception:
-            continue
+    for d in entries:
         r = d.get("r", "")
         c = d.get("c", "")
         if not r or not c:
@@ -319,6 +384,9 @@ def addToolsArray(req):
     for i, t in enumerate(TOOL_REGISTRY):
         if not toolEnabledIdx(i):
             continue
+        if _ACTIVE_TOOL_ALLOW is not None and \
+                t["name"] not in _ACTIVE_TOOL_ALLOW:
+            continue
         tools.append({
             "type": "function",
             "function": {
@@ -334,10 +402,17 @@ def addToolsArray(req):
 
 
 def execTool(name, args):
+    try:
+        _TOOL_CALL_COUNTS[name] = _TOOL_CALL_COUNTS.get(name, 0) + 1
+    except Exception:
+        pass
     if args is None:
         args = {}
     for t in TOOL_REGISTRY:
         if t["name"] == name:
+            if _ACTIVE_TOOL_ALLOW is not None and \
+                    name not in _ACTIVE_TOOL_ALLOW:
+                return '{"error":"tool not allowed in this delegated turn"}'
             try:
                 s = t["run"](args if isinstance(args, dict) else {})
             except Exception as e:

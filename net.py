@@ -33,7 +33,8 @@ def connectWiFi(timeoutMs=15000):
             pass
         # MicroPython: hostname for DHCP/mDNS-ish
         try:
-            sta.config(dhcp_hostname=config.MDNS_NAME)
+            sta.config(dhcp_hostname=getattr(config, "cfgMdnsName",
+                                            config.MDNS_NAME))
         except Exception:
             pass
         if sta.isconnected():
@@ -83,20 +84,21 @@ def startAP():
     try:
         import network
         ap = network.WLAN(network.AP_IF)
+        ap_ssid = getattr(config, "cfgApSsid", config.AP_SSID)
         # Open network when password is empty: omit password entirely and force
         # AUTH_OPEN. Passing password="" would select WPA with an empty key,
         # which produces a broken/hidden AP on some builds.
         try:
             if config.AP_PASS:
-                ap.config(essid=config.AP_SSID, password=config.AP_PASS)
+                ap.config(essid=ap_ssid, password=config.AP_PASS)
             else:
                 try:
-                    ap.config(essid=config.AP_SSID, authmode=network.AUTH_OPEN)
+                    ap.config(essid=ap_ssid, authmode=network.AUTH_OPEN)
                 except Exception:
-                    ap.config(essid=config.AP_SSID)
+                    ap.config(essid=ap_ssid)
         except Exception:
             try:
-                ap.config(essid=config.AP_SSID)
+                ap.config(essid=ap_ssid)
             except Exception:
                 pass
         try:
@@ -109,7 +111,7 @@ def startAP():
         except Exception as e:
             print("AP info failed:", e)
         try:
-            print("AP started: %s -> http://192.168.4.1/setup" % config.AP_SSID)
+            print("AP started: %s -> http://192.168.4.1/setup" % ap_ssid)
         except Exception:
             pass
     except Exception as e:

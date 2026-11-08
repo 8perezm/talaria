@@ -1,15 +1,31 @@
-# MicroPython device files — never commit live settings/memory
+# MicroPython device state - never commit live settings/memory/secrets
+config.yaml
+config.yaml.tmp
 config.json
+config.json.bak
 config.json.tmp
 memory.txt
+user.txt
 chatlog.jsonl
+chatlog*.jsonl
+cron.json
+bundles.json
+pending_mem.json
+pending_skills/
+tg.json
 *.tmp
 
 # CPython test / editor artifacts
 __pycache__/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 .playwright-mcp/
 *.pyc
+*.pyo
+*.log
 .vscode/
 .idea/
 .DS_Store
@@ -17,3 +33,9 @@ Thumbs.db
 Desktop.ini
 .env
 .env.*
+
+# Front-end toolchain (ui/ is source; www/ is the committed build output)
+node_modules/
+ui/dist/
+*.tsbuildinfo
+npm-debug.log*

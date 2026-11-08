@@ -332,20 +332,14 @@ class _ChunkedReader:
         return out
 
 
-def streamChat(reqBody, timeout=_LLM_TIMEOUT, tries=_LLM_TRIES):
-    """Streaming chat/completions. Generator of (kind, text) tuples.
-
-    kinds: 'delta' | 'reasoning' | 'tools' | 'status'
-    The final item is always ('status', (ok, err, code)).
-    Callers yield straight to the browser, so the first token reaches the UI
-    in ~1s instead of after the whole completion.
+def _stream_one_provider(reqBody, url, headers, timeout=_LLM_TIMEOUT,
+                         tries=_LLM_TRIES):
+    """Stream one provider attempt (tries socket retries). Generator of
+    (kind, text) tuples; kinds 'delta' | 'reasoning' | 'tools' | 'status'.
+    The final item is always ('status', (ok, err, code)). Factored out of
+    streamChat so provider failover (and host tests) can drive it per
+    provider without touching sockets.
     """
-    import config
-    url = config.chatCompletionsUrl(config.cfgEndpoint)
-    headers = {"Content-Type": "application/json", "Accept": "text/event-stream",
-               "HTTP-Referer": "http://esp32-agent.local", "X-Title": "ESP32-Agent"}
-    if config.cfgApiKey:
-        headers["Authorization"] = "Bearer " + config.cfgApiKey
     try:
         is_https, host, port, path = _split_url(url)
     except Exception as e:
@@ -499,15 +493,132 @@ def streamChat(reqBody, timeout=_LLM_TIMEOUT, tries=_LLM_TRIES):
     yield ("status", (False, last_err, last_code))
 
 
-def postLLM(reqBody):
-    """POST chat/completions. Returns (ok, resp_text, code)."""
+def streamChat(reqBody, timeout=_LLM_TIMEOUT, tries=_LLM_TRIES):
+    """Streaming chat/completions. Generator of (kind, text) tuples.
+
+    kinds: 'delta' | 'reasoning' | 'tools' | 'status'
+    The final item is always ('status', (ok, err, code)).
+    Callers yield straight to the browser, so the first token reaches the UI
+    in ~1s instead of after the whole completion.
+
+    Provider failover: if the primary fails BEFORE any delta/tool event is
+    yielded and a fallback is configured, the whole request is retried once
+    on the fallback. Once anything is yielded, failures report in place —
+    never restart mid-stream and duplicate output.
+    """
     import config
-    url = config.chatCompletionsUrl(config.cfgEndpoint)
-    headers = {"Content-Type": "application/json", "Accept": "application/json",
+    try:
+        import providers as _prov
+        plist = _prov.getProviders()
+    except Exception:
+        plist = []
+    if not plist:
+        url = config.chatCompletionsUrl(config.cfgEndpoint)
+        for kind, val in _stream_one_provider(reqBody, url,
+                                              _headers_for(config.cfgApiKey, True),
+                                              timeout, tries):
+            yield (kind, val)
+        return
+    yielded = False
+    for pi, (_url, _key, _model) in enumerate(plist):
+        body = _body_with_model(reqBody, _model)
+        pending = None
+        for kind, val in _stream_one_provider(body, _url,
+                                              _headers_for(_key, True),
+                                              timeout, tries):
+            if kind == "delta" or kind == "tools":
+                yielded = True
+                yield (kind, val)
+            elif kind == "status":
+                pending = val
+            else:
+                yield (kind, val)
+        if pending is None:
+            pending = (False, "empty stream", 0)
+        ok, err, code = pending
+        if ok and 200 <= code < 300:
+            yield ("status", pending)
+            return
+        if yielded:
+            # Mid-stream failure (or error after output began): report it,
+            # do not restart and duplicate.
+            yield ("status", pending)
+            return
+        try:
+            import providers as _p2
+            retry = _p2.shouldFailover(ok, code)
+        except Exception:
+            retry = not ok
+        if retry and pi + 1 < len(plist):
+            print("[net] stream provider%d failed, failing over" % pi)
+            continue
+        yield ("status", pending)
+        return
+
+
+def _body_with_model(reqBody, model):
+    """Return reqBody with its 'model' field swapped for a fallback provider.
+
+    postLLM/streamChat receive a body already encoded with the primary model;
+    the fallback entry may name a different model. Re-encode (same shape);
+    on any failure return the body untouched. utf-8 only.
+    """
+    try:
+        if isinstance(reqBody, bytes):
+            reqBody = reqBody.decode("utf-8")
+        if not model:
+            return reqBody
+        obj = json.loads(reqBody)
+        if isinstance(obj, dict):
+            if obj.get("model") == model:
+                return reqBody
+            obj["model"] = model
+            return json.dumps(obj)
+    except Exception:
+        pass
+    return reqBody
+
+
+def _headers_for(api_key, stream=False):
+    headers = {"Content-Type": "application/json",
                "HTTP-Referer": "http://esp32-agent.local", "X-Title": "ESP32-Agent"}
-    if config.cfgApiKey:
-        headers["Authorization"] = "Bearer " + config.cfgApiKey
-    return _post_raw(url, reqBody, headers)
+    headers["Accept"] = "text/event-stream" if stream else "application/json"
+    if api_key:
+        headers["Authorization"] = "Bearer " + api_key
+    return headers
+
+
+def postLLM(reqBody):
+    """POST chat/completions. Returns (ok, resp_text, code).
+
+    Tries the primary provider, then once the fallback (if configured).
+    Failover on transport failure, HTTP 429, HTTP 5xx. Other statuses
+    (incl. 401) and bad JSON return immediately, as before.
+    """
+    import config
+    try:
+        import providers as _prov
+        plist = _prov.getProviders()
+    except Exception:
+        plist = []
+    if not plist:
+        url = config.chatCompletionsUrl(config.cfgEndpoint)
+        return _post_raw(url, reqBody, _headers_for(config.cfgApiKey))
+    last = (False, "no provider", 0)
+    for i, (_url, _key, _model) in enumerate(plist):
+        body = _body_with_model(reqBody, _model)
+        ok, resp, code = _post_raw(_url, body, _headers_for(_key))
+        last = (ok, resp, code)
+        try:
+            import providers as _p2
+            retry = _p2.shouldFailover(ok, code)
+        except Exception:
+            retry = not ok
+        if retry and i + 1 < len(plist):
+            print("[net] provider%d failed (%s), failing over" % (i, str(resp)[:60]))
+            continue
+        return ok, resp, code
+    return last
 
 
 def addHistoryCapped(msgs, history, maxTurns=8):
@@ -545,20 +656,41 @@ def _msg_text(msg):
     return content, reason, rd
 
 
-def callLLMWithTools(userMsg, history=None, out=None):
+def callLLMWithTools(userMsg, history=None, out=None, max_iters=None):
     """Agentic loop. Returns reply string (or 'ERROR: ...').
 
     out, if a dict, is filled with {'reasoning': str, 'tools_used': str}.
+    max_iters caps the tool-call rounds (default from config.agent_max_iters,
+    clamped 1..5). The system prompt is built ONCE per turn (frozen) and
+    reused across iterations.
     """
     import config
     import agent_tools
+    try:
+        import prompt as _promptmod
+        _build_prompt = _promptmod.buildMiniPrompt
+    except Exception:
+        _build_prompt = agent_tools.buildSystemPrompt
+    if max_iters is None:
+        try:
+            max_iters = int(config.agent_max_iters)
+        except Exception:
+            max_iters = 3
+    try:
+        max_iters = int(max_iters)
+    except Exception:
+        max_iters = 3
+    if max_iters < 1:
+        max_iters = 1
+    if max_iters > 5:
+        max_iters = 5
     history = history or []
     if not config.cfgEndpoint:
         return "ERROR: agent endpoint not configured. Open /agent."
     req = {"model": config.cfgModel, "temperature": 0.7, "max_tokens": 800,
            "stream": False, "messages": []}
     msgs = req["messages"]
-    msgs.append({"role": "system", "content": agent_tools.buildSystemPrompt()})
+    msgs.append({"role": "system", "content": _build_prompt()})
     # The browser sends its live transcript; the device log is the fallback
     # for a fresh page (refresh / another browser) so context survives.
     if not history:
@@ -573,7 +705,7 @@ def callLLMWithTools(userMsg, history=None, out=None):
     finalText = ""
     finalReason = ""
     sawHttpFail = False
-    for it in range(3):
+    for it in range(max_iters):
         try:
             body = json.dumps(req)
         except Exception as e:
@@ -732,13 +864,18 @@ def callLLM(userMsg, history=None, outReasoning=None):
     """Legacy plain (non-tool) path, kept for reference/debug."""
     import config
     import agent_tools
+    try:
+        import prompt as _promptmod
+        _build_prompt = _promptmod.buildMiniPrompt
+    except Exception:
+        _build_prompt = agent_tools.buildSystemPrompt
     history = history or []
     if not config.cfgEndpoint:
         return "ERROR: agent endpoint not configured. Open /agent."
     req = {"model": config.cfgModel, "temperature": 0.7, "max_tokens": 800,
            "stream": False, "messages": []}
     msgs = req["messages"]
-    msgs.append({"role": "system", "content": agent_tools.buildSystemPrompt()})
+    msgs.append({"role": "system", "content": _build_prompt()})
     if not history:
         agent_tools.injectRecentLog(msgs, userMsg, 8)
     for m in (history or [])[:16]:

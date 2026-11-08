@@ -1,0 +1,15 @@
+# This tree is deployed byte-for-byte to a microcontroller (mpremote cp) and
+# carries pre-built assets whose hashes/gzip twins must stay exact, so never
+# let core.autocrlf rewrite anything on checkout.
+* text=auto eol=lf
+
+# Real binaries: no diffing, no EOL smarts.
+*.gz    binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.bin   binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary

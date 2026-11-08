@@ -62,6 +62,113 @@ def test_read_log_tail_order_and_cap(tmp_path, monkeypatch):
     assert tail[0]["role"] == "assistant"
 
 
+def test_long_reply_survives_store_and_restore(tmp_path, monkeypatch):
+    """A 6-7 paragraph answer must come back whole after a page reload.
+
+    Regression: appendChatLog stored 1500 chars and _read_log_tail returned
+    only 800, so the transcript showed roughly two paragraphs after refresh.
+    """
+    _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "cfgChatEntryChars", 6000)
+    reply = ("Edinburgh is Scotland's capital. " * 30 + "\n\n") * 7
+    reply = reply[:5500]
+    assert agent_tools.appendChatLog("tell me about edinburgh", reply)
+    tail, _ = server._read_log_tail(agent_tools.LOG_PATH, 20)
+    assert tail[-1]["role"] == "assistant"
+    assert tail[-1]["content"] == reply
+    assert len(tail[-1]["content"]) > 800
+
+
+def test_twenty_turn_conversation_is_retained(tmp_path, monkeypatch):
+    """The rolling log must keep 20 turns of multi-paragraph replies."""
+    _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "cfgChatEntryChars", 4000)
+    paragraph = "Edinburgh has a long and layered history. " * 25  # ~1.2 KB
+    reply = (paragraph + "\n\n") * 3  # a few paragraphs, ~3.6 KB
+    for i in range(20):
+        assert agent_tools.appendChatLog("question %d" % i, reply)
+    # The chat page asks for 40 lines = 20 turns.
+    tail, size = server._read_log_tail(agent_tools.LOG_PATH, 40)
+    assert len(tail) == 40
+    assert tail[0]["role"] == "user"
+    assert tail[1]["role"] == "assistant"
+    assert all(len(e["content"]) == len(reply) for e in tail[1::2])
+    # Host reads translate CRLF, so compare against the budget, not st_size.
+    assert size > 60000
+    assert size < agent_tools.LOG_MAX_BYTES
+
+
+def test_chunked_tail_reader_matches_last_lines(tmp_path, monkeypatch):
+    """Backwards block reads must return exactly the last N complete lines."""
+    _setup(tmp_path, monkeypatch)
+    path = "tailtest.jsonl"
+    with open(path, "w") as f:
+        for i in range(100):
+            f.write(json.dumps({"r": "user", "c": "line %d " % i + "x" * 50}) + "\n")
+    # 64-byte blocks force many seeks, and lines are longer than one block.
+    tail, total = server._read_log_tail(path, 5, block_bytes=64)
+    assert total > 0
+    assert [e["content"].split()[1] for e in tail] == ["95", "96", "97", "98", "99"]
+    assert [e["role"] for e in tail] == ["user"] * 5
+
+
+def test_chunked_tail_reader_handles_line_larger_than_block(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    path = "tailtest.jsonl"
+    big = "z" * 5000
+    with open(path, "w") as f:
+        f.write(json.dumps({"r": "assistant", "c": "first"}) + "\n")
+        f.write(json.dumps({"r": "assistant", "c": big}) + "\n")
+        f.write(json.dumps({"r": "user", "c": "last"}) + "\n")
+    tail, _ = server._read_log_tail(path, 2, max_chars=6000, block_bytes=128)
+    assert [e["content"] for e in tail] == [big, "last"]
+
+
+def test_log_rotation_keeps_newest_and_respects_budget(tmp_path, monkeypatch):
+    """Chunked rotation trims to the newest slice without reading it all."""
+    _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "cfgChatEntryChars", 2000)
+    monkeypatch.setattr(config, "cfgChatLogMaxKB", config.CHAT_LOG_MAX_KB_MIN)
+    monkeypatch.setattr(config, "cfgChatLogKeepKB", config.CHAT_LOG_KEEP_KB_MIN)
+    text = "y" * 1000
+    for i in range(80):  # ~160 KB written -> several rotations
+        assert agent_tools.appendChatLog("q%d" % i, text)
+    size = os.stat(agent_tools.LOG_PATH)[6]
+    assert size <= (config.CHAT_LOG_MAX_KB_MIN * 1024) + 4096
+    assert not os.path.exists(agent_tools.LOG_PATH + ".tmp")
+    tail, _ = server._read_log_tail(agent_tools.LOG_PATH, 2, max_chars=2000)
+    assert tail[-1]["role"] == "assistant"
+    assert tail[-1]["content"] == text
+    every, _ = server._read_log_tail(agent_tools.LOG_PATH, 200, max_chars=2000)
+    assert all(e["content"] != "q0" for e in every)
+
+
+def test_memory_default_uses_configured_restore_turns(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "cfgChatRestoreTurns", 3)
+    for i in range(6):
+        assert agent_tools.appendChatLog("q%d" % i, "a%d" % i)
+    res = _request("get", "/api/memory")
+    assert res.status_code == 200
+    assert [e["content"] for e in res.json["log_tail"]] == [
+        "q3", "a3", "q4", "a4", "q5", "a5"]
+
+
+def test_chat_entry_chars_config_endpoint(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    res = _request("post", "/api/config", {"chat_entry_chars": 9000})
+    assert res.status_code == 200
+    assert res.json["chat_entry_chars"] == 9000
+    got = _request("get", "/api/config")
+    assert got.status_code == 200
+    assert got.json["chat_entry_chars"] == 9000
+    # and the configured cap is what the restore path now applies
+    assert agent_tools.appendChatLog("q", "x" * 12000)
+    tail, _ = server._read_log_tail(agent_tools.LOG_PATH, 20)
+    assert len(tail[-1]["content"]) == 9000
+    config.cfgChatEntryChars = config.DEFAULT_CHAT_ENTRY_CHARS
+
+
 def test_memory_endpoint_tail_param(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     for i in range(8):
@@ -153,27 +260,5 @@ def test_history_skips_log_when_client_sends_history(tmp_path, monkeypatch):
     assert "old q" in contents  # empty page -> device log restores context
 
 
-def test_chat_page_restores_transcript_from_device_memory():
-    path = os.path.join(os.path.dirname(__file__), "..", "www", "chat.html")
-    with open(path, encoding="utf-8") as f:
-        src = f.read()
-    assert "/api/memory?tail=20" in src
-    assert "function restoreTranscript" in src
-    # restored turns must seed history, or the next request loses context
-    assert "history.push({role:m.role,content:m.content})" in src
-    # clear button wipes both the view and the device log, and resets history
-    assert 'id="clearbtn"' in src
-    assert "function clearChat" in src
-    assert "clear_log:true" in src
-    assert "history=[]" in src
 
 
-def test_clear_dialogs_are_in_page_modals():
-    """No native confirm()/alert(): both pages use the styled modal."""
-    base = os.path.join(os.path.dirname(__file__), "..", "www")
-    for name in ("chat.html", "functions.html"):
-        with open(os.path.join(base, name), encoding="utf-8") as f:
-            src = f.read()
-        assert "confirm(" not in src, "%s still calls a native confirm()" % name
-        assert 'class="modal"' in src, "%s has no in-page modal" % name
-        assert "modalcard" in src

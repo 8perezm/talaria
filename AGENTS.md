@@ -87,9 +87,9 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   `mpremote mip install github:…/microdot` DOES NOT WORK (tries to fetch
   `package.json`, fails). Don't retry mip; copy files. **`erase-flash` wipes
   these — remember to re-deploy `/lib` after any flash.**
-- `erase-flash` also wipes `config.json` (WiFi creds, API key, auth token) and
-  `chatlog.jsonl`. Back them up first — read them over the REPL as base64
-  chunks (`binascii.b2a_base64`) and restore after.
+- `erase-flash` also wipes `config.yaml` (WiFi creds, API key, auth token),
+  `config.json.bak` and `chatlog.jsonl`. Back them up first — read them over
+  the REPL as base64 chunks (`binascii.b2a_base64`) and restore after.
 
 ## MicroPython platform limits (cost real bugs)
 
@@ -183,12 +183,40 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   successful stream, or normal chat leaves `chatlog.jsonl` empty and the device
   forgets everything after a refresh (this was a real bug — the C++ original
   had it too). Do not log when `{"need_tools":true}` is sent: the browser's
-  `/api/chat` fallback owns that turn. `chat.html` restores the transcript
-  from `/api/memory?tail=20` and seeds its `history` array; its **Clear** button
-  posts `{"clear_log":true}` to `/api/memory`, empties `history` and the view,
-  and bumps `chatGen` so a pending restore cannot re-add old turns. Log
-  injection is skipped whenever the browser sends history (`if not history`) so
-  the same turns are not sent twice in the prompt.
+  `/api/chat` fallback owns that turn. `ChatPage.tsx` restores the transcript
+  from `/api/memory` (no `?tail=`; the device picks the depth from Config) and
+  seeds its `history` array; its **Clear** button posts `{"clear_log":true}` to
+  `/api/memory`, empties `history` and the view, and bumps the turn sequence so
+  a pending restore cannot re-add old turns. Log injection is skipped whenever
+  the browser sends history (`if not history`) so the same turns are not sent
+  twice in the prompt.
+  **Per-message retention is configurable:** `config.cfgChatEntryChars`
+  (`chat.entry_chars` in config.yaml, Config → Chat), default 4000,
+  clamped 500–20000. It bounds both `agent_tools.appendChatLog` (storage) and
+  `server._read_log_tail` (restore). The old hard caps (1500 store / 800
+  restore) silently cut a 6–7 paragraph reply down to ~2 paragraphs after a
+  reload — don't reintroduce them. The LLM **prompt** caps in
+  `injectRecentLog` / `llm.addHistoryCapped` (1500 chars) are separate on
+  purpose. Changing the setting affects new messages only; entries already in
+  the log keep the text they were stored with.
+  **Rolling storage is config, not constants** (Config → Chat history):
+  `chat_log_max_kb` (default 320, 64–4096), `chat_log_keep_kb` (default 200,
+  32–max−32) and `chat_restore_turns` (default 20, 1–60). The old constants
+  are just fallbacks (`LOG_MAX_BYTES`/`LOG_KEEP_BYTES` 320/200 KB, was 32/16).
+  40 messages × 4000 chars ≈ 160 KB, so 20 multi-paragraph turns survive
+  rotation. `/api/memory` returns `chat_restore_turns × 2` lines by default
+  (explicit `?tail=` still works, capped 240).
+  **Chunked I/O:** `fsutil.read_jsonl_tail` reads the file backwards in 16 KB
+  blocks and parses only the lines it needs; `server._read_log_tail` and
+  `agent_tools.injectRecentLog` both use it, and `_rotate_chatlog` copies the
+  retained tail through a temp file in blocks, then swaps. RAM is one block +
+  the requested entries, independent of log size. Measured on-device against a
+  **1 MB** log: `tail=40` 1.72 s, `tail=4` 0.23 s (the old whole-file reader
+  would pull the full megabyte). This is the groundwork for pointing
+  `agent_tools.LOG_PATH` at USB storage later; the remaining steps are the
+  mount (`/sd`), allowing that path in `fsutil`'s `_WRITE_REFUSED_NAMES` /
+  Explorer root logic, and `/update`'s state-file blocklist. Do not replace
+  the block readers with `f.read()` — that reintroduces the RAM/latency wall.
 - Streaming must use **HTTP/1.1**; HTTP/1.0 servers cannot send chunked
   bodies, so an SSE response would either be buffered or require closing the
   connection to signal the end. The buffered path (`_post_raw`) stays on
@@ -205,24 +233,40 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   in 1.9 KB, so this was prompt-induced, not a model limit. Keep the explicit
   "you have full general knowledge, answer directly without a tool" clause,
   and do not re-add "low RAM" (the board has ~8 MB free now).
-- `config.json`, `memory.txt`, `chatlog.jsonl` are gitignored device state.
-  `/update` refuses them (plus `config.json.tmp`). Keep that blocklist.
+- `config.yaml`, `config.json`, `config.json.bak`, `memory.txt`, `chatlog.jsonl`
+  are gitignored device state. `/update` refuses them (plus `config.yaml.tmp`).
+  Keep that blocklist. The first boot after an upgrade migrates `config.json`
+  into `config.yaml` and renames the old file to `config.json.bak`.
 - **No native dialogs app-wide:** `alert()`, `confirm()` and `prompt()` are
   banned in every `www/*.html` page — always use an in-page modal
   (see the promise-based modal in `www/files.html`, same pattern as the
   chat/functions clear-confirm modals). Grep for
   `\b(alert|confirm|prompt)\s*\(` must return zero matches.
-- **Files Explorer (`/files`, `www/files.html` + `/api/files*` in `server.py`):**
-  Windows-Explorer-style page — left Quick-access/sidebar, breadcrumb bar,
-  Details table (Name/Type/Date modified/Size, sortable), search filter,
-  New folder / Upload / Download / Rename / Delete, and an in-page editor
-  with dependency-free syntax highlighting (Python/HTML/JS/CSS/JSON,
-  textarea-over-highlighted-pre overlay, Ctrl+S saves). Uses the full browser
-  width (no centred 800px column). Backend is pure `os.listdir`/`os.stat`
-  helpers (`_fs_norm`, `_fs_list_dir`, `_fs_read_text`, …) so host tests cover
-  them (`tests/test_files.py`, `_FS_ROOT` override). 100KB read / 200KB
-  write caps; binary files are download-only. Download accepts the auth token
-  as `?token=` because plain links cannot set headers.
+- **Files (`/files`, `ui/src/pages/FilesPage.tsx` + `/api/files*`):** the main
+  area is a 1:1 port of upstream Hermes' `web/src/pages/FilesPage.tsx`, not the
+  old Windows-Explorer layout. Header = "Files" + outlined path badge + refresh
+  icon; body = mono path, outlined UPLOAD/CREATE, a dashed drop-zone button
+  ("DROP FILES HERE" / path / "CHOOSE FILES"), then one bordered table with a
+  fixed `minmax(12rem,1fr) / 7rem / 10rem / 5.5rem` grid for
+  Name/Size/Modified/Actions, a ".." parent row, yellow folder icons, mono
+  names, absolute `Intl.DateTimeFormat` timestamps, and ghost Open/Download +
+  Trash actions. No stat strip, breadcrumb, search box or rename — adding those
+  back breaks parity with the reference page.
+  Deliberate deviation requested for usability: folders always group above
+  files, and the Name/Size/Modified headers are sortable (click toggles
+  asc/desc, arrow shows the active column; default = folders first, then name
+  ascending). Sorting is client-side over the listed entries.
+  Micro-only affordance kept: clicking a **file name** opens the full-screen
+  editor (Ctrl+S saves) instead of downloading; the Download icon downloads.
+  The editor is portaled to `<body>` — without that the shell's `z-[2]`
+  stacking context paints the sidebar over it. `Modal` is portaled for the same
+  reason (its backdrop must dim the sidebar too).
+  Backend is pure `os.ilistdir`/`os.stat` helpers (`_fs_norm`,
+  `_fs_list_dir`, `_fs_read_text`, …) covered by `tests/test_files.py`
+  (`_FS_ROOT` override). 100KB read / 200KB write caps; binary files are
+  download-only. Download accepts the auth token as `?token=` because plain
+  links cannot set headers. Uploads are text-read client-side and written via
+  `/api/files/save` (the multipart `/api/files/upload` endpoint also exists).
 
 ## Deploy flow that works
 
@@ -256,5 +300,114 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
 - The device is currently healthy on home WiFi `192.168.5.56` (STA), endpoint
   `https://api.deepinfra.com/v1/openai`, model
   `deepseek-ai/DeepSeek-V4.1-Flash-1017`, auth token enabled. Don't wipe
-  `config.json`.
+  `config.yaml`.
+
+## Dashboard: React SPA (2026-11-07, replaces the hand-written HTML pages)
+
+- **The UI is React.** `ui/` is a Vite + React 19 + TypeScript + Tailwind v4
+  project modelled on Nous Research's Hermes Agent dashboard. `npm run build`
+  emits straight into `www/`:
+      www/index.html            shell, cache-busted `?v=<hash>`
+      www/assets/app.js         ONE chunk, ~442 KB
+      www/assets/app.css        ~46 KB
+      www/assets/app.js.gz      prebuilt gzip twin, ~130 KB
+      www/assets/app.css.gz
+  MicroPython cannot gzip at request time, so the twins are built on the host.
+  Serving them cut first paint from ~7 s to ~2 s; `app.js` alone over plain
+  flash is ~7 s. Do not delete the `.gz` files.
+- **No per-route HTML files exist any more.** `server.py` serves the shell for
+  every non-`/api` path via a **catch-all registered LAST** (`@app.get(
+  "/<path:path>")`). If you move it earlier it swallows every `/api` route and
+  the whole app 404s — that exact bug cost a debug cycle.
+- **Design tokens are the Hermes LENS_0 palette**, ported into
+  `ui/src/index.css` from upstream `web/src/index.css`: canvas `#041c1c`,
+  cream midground `#ffe6cb`, square corners (`--radius: 0px`), hairline
+  `current/15–20%` rules, uppercase micro-labels at `0.12em` tracking,
+  nav items `13px` uppercase in a `240px` sidebar, active item = cream text +
+  1 px left cream bar. Cream-filled "active" tabs invert to dark text.
+  Custom DS fonts (Collapse/Rules/Mondwest) are **not** bundled — offline
+  device, and they are not ours to redistribute. `system-ui` at the same
+  weights/tracking reads nearly identically.
+- **Nav ↔ route parity is a test, not a convention.** `tests/test_spa.py`
+  parses `NAV` in `ui/src/components/Shell.tsx` and the `<Route>` list in
+  `ui/src/App.tsx` and asserts they match both ways. Utility screens
+  (`/setup`, `/wifi`, `/update`) are exempt — they are linked from the pages
+  that own them.
+- **House rules pinned by tests:** no `alert`/`confirm`/`prompt` anywhere (use
+  the promise-based `useConfirm` modal), no CDN/Google-Fonts, palette and
+  square corners unchanged, `esp32_token` localStorage key preserved so an
+  already-unlocked browser stays unlocked across the upgrade.
+- **Client request gate: `MAX_CONCURRENT = 1`** in `ui/src/lib/api.ts`. The
+  ESP32's lwIP drops extra SYNs when several fresh connections arrive at
+  once; TCP then retransmits on a 1/2/4 s backoff, which looked like an 8 s
+  hang on first paint. Serialising all API calls turned startup into ~1.5 s of
+  predictable round trips. **Do not raise this without measuring.**
+- `/api/models` reaches the provider over TLS from the device and can take
+  6 s — fetch it lazily (on picker open), never at page start, or it blocks
+  the gate for everything else.
+- **`fsutil.list_dir` does ONE stat per entry.** `os.ilistdir` already gives
+  type and size; the old three-stats-per-entry version made a 33-entry root
+  listing take 8.8 s. Now ~2.2 s. Keep it at one.
+- Field debugging: `window.__hermes` holds live dashboard state,
+  `window.__hermesNet` the last 40 API calls with timings. Both are cheap and
+  worth keeping — they are the only console the device has.
+- Upload path: `POST /api/ui/asset?path=assets/app.js` writes a bundle file
+  (≤900 KB, only `index.html`/`favicon.svg`/`assets/*`). It failed for a
+  ~430 KB body over `Invoke-WebRequest` in testing; `mpremote cp` is the
+  reliable path for a full bundle (~77 s for `app.js`).
+- `POST /update` accepts `.py/.html/.json/.txt/.mpy/.js/.css/.svg/.md`
+  (900 KB cap for `.js`/`.css`, 200 KB otherwise) and routes web files into
+  `www/` / `www/assets/`.
+- Retired: `www/dash.css`, `www/icons.svg`, all `www/*.html` pages, and the
+  tests that pinned them (`test_dash0/2/4/5/6/7a/7b`, `test_model_picker`,
+  plus page-only cases in `test_dash3`, `test_console`, `test_stats`,
+  `test_mini_phase9`, `test_conversation_memory`). The API-level guarantees
+  that lived in `test_dash5` (reset vs reboot, backup redaction, checkpoint
+  pruning) moved to `tests/test_api_contract.py`.
+- **`/api/reset` IS FACTORY-WIPE + reboot** (deletes `config.yaml`,
+  `config.json`, `config.json.bak`, memory and chat log), NOT a restart.
+  **`POST /api/reboot` is the safe soft reset** (wipes nothing). No dashboard
+  button wires to `/api/reset` except the typed confirmation on System —
+  keep it that way.
+- Backup redaction rule: `GET /api/backup` must NEVER emit raw
+  `api_key`/`wifi_pass`/`auth_token`/`bot_token` (masked shapes only, gateway
+  presence-only). Pinned by redaction-matrix test. No restore v1 — restore =
+  /files editor + reboot.
+- Flash: bundle totals ~490 KB on disk, ~630 KB with the `.gz` twins.
+
+## Config: schema-driven page + YAML storage (2026-11-08)
+
+- **`config.yaml` is the source of truth.** Nested sections: `agent`,
+  `fallback`, `network`, `chat`, `security`, plus `tools.mask`. `config.json`
+  is only read once for migration and renamed `config.json.bak`.
+- **`config_schema.py` is the single registry** for field key, category,
+  group, type, label, description, default, min/max and `restart`. Add a
+  setting there and read it in `config.py`; the Config page renders it
+  automatically (no per-setting React code).
+- **`yamlish.py` is a deliberately small YAML subset** — maps, block/inline
+  lists, inline maps, quoted strings, comments, bool/int/float/null. It
+  rejects anchors, tags and block scalars. `yamlish.dumps(doc, order)` takes
+  a dotted-path order map because MicroPython dicts are unordered;
+  `config.dump_doc` supplies schema order.
+- **APIs:** `GET /api/config/form` (fields + values; secrets blank + masked),
+  `POST /api/config/form` `{values: {"dotted.key": value}}`,
+  `GET /api/config/yaml` (redacted; `?secrets=1` reveals), and
+  `POST /api/config/yaml` `{yaml}` (full replacement). Masked `****`
+  placeholders are replaced with live secrets before saving; raw text is
+  written back verbatim when it normalizes unchanged, so hand-written YAML
+  comments survive a raw save.
+- **Restart semantics:** form saves never reboot. Network fields return
+  `restart_required: true` and the Network section shows a Restart button.
+  Raw YAML changes to `auth_token` return the new token so the SPA updates
+  `localStorage`.
+- **Old flat endpoints still work:** `/api/config`, `/api/agent`, `/api/wifi`
+  write through `config._save_patch` into the nested YAML.
+- **Secrets stay masked by default.** The redacted YAML view is generated
+  from the real file so unknown/hand-added keys are preserved. Do not make
+  the default `/api/config/yaml` response return raw secrets.
+- `memory.approval_enabled()` and `skillstore.approval_enabled()` now call
+  `config.get_approval()`; do not reintroduce direct `config.json` reads.
+- `main.py` restarts the Microdot server loop if it returns, so a wedged
+  handler becomes a 2s restart instead of a silent drop to the REPL.
+
 
