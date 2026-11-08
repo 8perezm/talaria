@@ -45,6 +45,10 @@ if (-not (Test-Path "www/index.html")) {
   throw "www/index.html missing -- run 'npm run build' inside ui/ first"
 }
 
+Write-Host "Stopping app (waiting for REPL)..."
+$repl = (& python -m mpremote connect $Port exec "print('IN-REPL')" | Out-String)
+if ($LASTEXITCODE -ne 0 -or $repl -notmatch "IN-REPL") { throw "no REPL - the board may still be booting or the port is wrong" }
+
 Write-Host "Ensuring app/ and www/assets exist..."
 & python -m mpremote connect $Port exec "import os`nfor _d in ('app', 'www', 'www/assets'):`n try: os.mkdir(_d)`n except OSError: pass"
 if ($LASTEXITCODE -ne 0) { throw "could not create app/ or www/assets" }
