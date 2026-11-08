@@ -92,40 +92,10 @@ python scripts/esp_deploy.py server.py llm.py --reset
 
 ## Configuration
 
-All settings live in `config.yaml` on the device. The easiest path is the
-dashboard: **Setup** (first run), **Config** (provider, network, chat, theme,
-security), and **Keys** (device token). You can also edit `config.yaml`
-directly in the Files editor.
-
-```yaml
-agent:
-  endpoint: https://api.deepinfra.com/v1/openai
-  model: deepseek-ai/DeepSeek-V4.1-Flash-1017
-  api_key: sk-...
-  max_iters: 3
-network:
-  wifi_ssid: HomeNet
-  wifi_pass: ...
-chat:
-  entry_chars: 4000
-  restore_turns: 20
-security:
-  auth_token: ...
-```
-
-- **Provider:** endpoint base URL (`/chat/completions` is appended), API key,
-  model id. Optional fallback provider is used only when the primary fails.
-- **WiFi:** set SSID/password under Config → Network, then restart. Changing
-  them from the setup page (`http://192.168.4.1/wifi`) needs no restart dance —
-  just Save & Reboot.
-- **Device token (optional, min 8 chars):** set it on the Keys page. The
-  browser then logs in with username `admin` + the token, and API clients send
-  `Authorization: Bearer <token>` (or `X-Auth-Token: <token>`).
-- **Chat history:** how much of each message is kept (`entry_chars`), how many
-  turns reload after a refresh (`restore_turns`), and the rolling-log budgets.
-- Upgrading from an older build: the first boot converts a legacy
-  `config.json` into `config.yaml` automatically (old file kept as
-  `config.json.bak`).
+All settings live in `config.yaml` on the device — provider, WiFi, device
+token, chat history, and theme. The easiest path is the dashboard (**Setup**,
+**Config**, **Keys**); see [Setup & Configuration](./docs/setup.md) for the
+full walkthrough and examples.
 
 ## Quick Start / Usage
 
@@ -150,15 +120,9 @@ maintenance.
 
 ## Troubleshooting / FAQ
 
-| Symptom | What to do |
-|---|---|
-| Board unreachable / IP changed | Re-check the serial boot log for the `WiFi OK:` line — DHCP may have moved the IP. mDNS (`talaria-agent.local`) is best-effort only; use the IP. |
-| Setup network not visible | Trust the device serial log (`AP started: Talaria-Agent-Setup`), not the PC's WiFi scan, which can miss it. |
-| Chat fails / TLS errors | The clock must be plausible for TLS: after a full power cycle confirm `[ntp] time synced:` in the log. On the device run `import gc; print(gc.mem_free())` — it must read ~8 000 000; ~90 000 means the wrong (non-SPIRAM_OCT) firmware was flashed. |
-| Uploads fail verification | Re-run the deploy and compare sizes — only `os.stat(...)[6]` equality counts. Prefer the UART port; COM numbers move on re-enumeration. |
-| REPL contact killed the server | Expected — entering the REPL stops the app. Reset the board (`--reset` flag or RESET button) and verify over HTTP. |
-| First paint is slow / stalls | The app serialises API calls for the microcontroller's network stack; `/api/models` can take ~6 s and is fetched lazily. In the browser console, `window.__talariaNet` shows the last 40 calls with timings. |
-| Forgot the device token | Clear it via serial/`mpremote` by editing `config.yaml` (`security.auth_token`), or factory-reset from System (typed confirmation — deletes config, memory, and sessions). |
+See [Troubleshooting & FAQ](./docs/troubleshooting.md) — unreachable board,
+setup network, TLS errors, failed upload verification, slow first paint, and
+lost device token.
 
 ## License
 
@@ -172,6 +136,8 @@ Dashboard design inspired by [Hermes Agent by Nous Research](https://github.com/
 - [Project Structure](./docs/project-structure.md) — Repository layout
 - [Development Guide](./docs/development.md) — Local setup, test loop, standards
 - [Build & Deployment](./docs/build-and-deployment.md) — Flashing and deploys
+- [Setup & Configuration](./docs/setup.md) — First-run setup and everyday settings
+- [Troubleshooting & FAQ](./docs/troubleshooting.md) — Fixes for common problems
 - [Configuration](./docs/configuration.md) — Settings schema and config APIs
 - [API Reference](./docs/api.md) — Endpoints and built-in tools
 - [Testing](./docs/testing.md) — Test suite layout and conventions
