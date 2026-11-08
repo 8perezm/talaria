@@ -20,17 +20,42 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Every mpremote call goes through here with a timeout. A hung transfer used
+# to block the whole deploy forever (a bare `mpremote connect` waits on stdin
+# indefinitely), so now it fails fast naming the command that stalled.
+# Returns the command's stdout text; throws on timeout or non-zero exit.
+$MPRunTimeoutSec = 180
+
 function MPRun([string[]]$mpArgs) {
-  & python -m mpremote connect $Port @mpArgs
-  if ($LASTEXITCODE -ne 0) { throw "mpremote failed: $($mpArgs -join ' ')" }
+  $job = Start-Job -ScriptBlock {
+    param($root, $port, $cargs)
+    Set-Location $root
+    $out = & python -m mpremote connect $port @cargs 2>&1 | Out-String
+    Write-Output $out
+    Write-Output ("EXIT:" + $LASTEXITCODE)
+  } -ArgumentList $PSScriptRoot, $Port, (,$mpArgs)
+  $finished = Wait-Job $job -Timeout $MPRunTimeoutSec
+  $raw = Receive-Job $job
+  Remove-Job $job -Force -ErrorAction SilentlyContinue
+  if (-not $finished) {
+    throw "mpremote timed out after ${MPRunTimeoutSec}s: $($mpArgs -join ' ')"
+  }
+  $lines = @($raw -split "`r?`n")
+  $exitLine = @($lines | Where-Object { $_ -match "^EXIT:" })[-1]
+  $body = (($lines | Where-Object { $_ -notmatch "^EXIT:" }) -join "`n").Trim()
+  if ($body) { Write-Host $body }
+  $code = if ($exitLine) { [int]($exitLine -replace "^EXIT:", "").Trim() } else { 1 }
+  if ($code -ne 0) { throw "mpremote failed (exit $code): $($mpArgs -join ' ')" }
+  return $body
 }
 
 function Copy-Verified([string]$local, [string]$remote) {
   if (-not (Test-Path $local)) { throw "missing $local" }
   $size = (Get-Item $local).Length
   Write-Host ("-> {0} ({1:N0} B)" -f $remote, $size)
-  MPRun @("cp", $local, ":$remote")
-  $got = (& python -m mpremote connect $Port exec "import os;print(os.stat('$remote')[6])" | Select-Object -Last 1).Trim()
+  MPRun @("cp", $local, ":$remote") | Out-Null
+  $out = MPRun @("exec", "import os;print(os.stat('$remote')[6])")
+  $got = (($out -split "`r?`n") | Select-Object -Last 1).Trim()
   if ($got -ne "$size") { throw "size mismatch for $remote (device $got, local $size)" }
 }
 
@@ -46,12 +71,11 @@ if (-not (Test-Path "www/index.html")) {
 }
 
 Write-Host "Stopping app (waiting for REPL)..."
-$repl = (& python -m mpremote connect $Port exec "print('IN-REPL')" | Out-String)
-if ($LASTEXITCODE -ne 0 -or $repl -notmatch "IN-REPL") { throw "no REPL - the board may still be booting or the port is wrong" }
+$repl = MPRun @("exec", "print('IN-REPL')")
+if ($repl -notmatch "IN-REPL") { throw "no REPL - the board may still be booting or the port is wrong" }
 
 Write-Host "Ensuring app/ and www/assets exist..."
-& python -m mpremote connect $Port exec "import os`nfor _d in ('app', 'www', 'www/assets'):`n try: os.mkdir(_d)`n except OSError: pass"
-if ($LASTEXITCODE -ne 0) { throw "could not create app/ or www/assets" }
+MPRun @("exec", "import os`nfor _d in ('app', 'www', 'www/assets'):`n try: os.mkdir(_d)`n except OSError: pass") | Out-Null
 
 Write-Host "Deploying application code (app/ + entry points)..."
 $code = @(
@@ -89,7 +113,7 @@ if (-not $SkipUI) {
 
 Write-Host ""
 Write-Host "Deploy complete. Rebooting..."
-& python -m mpremote connect $Port reset
+MPRun @("reset") | Out-Null
 
 Start-Sleep -Seconds 8
 Write-Host "Waiting for the device to answer..."
