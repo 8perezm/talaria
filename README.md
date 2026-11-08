@@ -1,168 +1,101 @@
-# Talaria Agent — MicroPython port
+# Talaria Agent
 
-A chat harness on your ESP32, built in **MicroPython + Microdot** instead of C++/Arduino.
-Same functionality as [`esuyo-esp32-agent`](../esuyo-esp32-agent): ears, hands, memory,
-and the same JSON API — you can ask it to blink lights, read pins, remember facts,
-scan WiFi, and fetch the web.
+> Your own AI assistant running on a microcontroller — chat, remember, automate, and control hardware from a browser dashboard.
 
-The browser UI is a **React single-page dashboard** modelled on
-[Nous Research's Hermes Agent](https://github.com/NousResearch/hermes-agent): the same
-sidebar, palette, typography and interaction model, compiled to three files and served
-straight off the microcontroller.
+Talaria Agent is a self-contained AI agent for the ESP32-S3. It connects to any
+OpenAI-compatible model provider, answers with streaming chat, calls built-in
+tools (GPIO, ADC, WiFi scan, web fetch, memory, schedules, files and more), and
+serves a full dashboard — all from the chip itself, with no cloud account or
+subscription. It is built and tested on the **ESP32-S3 N16R8** board
+(16 MB flash, 8 MB octal PSRAM).
 
-> Port of the C++ firmware. Behaviour, routes, and all 10 tools are preserved;
-> platform differences (config storage, update mechanism, mDNS) are noted below.
+## Screenshots
 
-## The dashboard
+<img src="docs/assets/screenshot-chat.png" width="800" alt="Chat"/>
 
-![dashboard](docs/screenshot-chat.png)
+<table>
+  <tr>
+    <td align="center"><a href="docs/assets/screenshot-sessions.png"><img src="docs/assets/screenshot-sessions.png" width="250"/><br/>Sessions</a></td>
+    <td align="center"><a href="docs/assets/screenshot-files.png"><img src="docs/assets/screenshot-files.png" width="250"/><br/>Files</a></td>
+    <td align="center"><a href="docs/assets/screenshot-analytics.png"><img src="docs/assets/screenshot-analytics.png" width="250"/><br/>Analytics</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="docs/assets/screenshot-models.png"><img src="docs/assets/screenshot-models.png" width="250"/><br/>Models</a></td>
+    <td align="center"><a href="docs/assets/screenshot-tools.png"><img src="docs/assets/screenshot-tools.png" width="250"/><br/>Tools</a></td>
+    <td align="center"><a href="docs/assets/screenshot-system.png"><img src="docs/assets/screenshot-system.png" width="250"/><br/>System</a></td>
+  </tr>
+</table>
 
-| | |
-| --- | --- |
-| **Chat** | streaming SSE, tool-call fallback, reasoning collapse, model picker |
-| **Sessions** | the device transcript, searchable, exportable, clear-on-confirm |
-| **Files** | explorer + editor over the on-device filesystem |
-| **Analytics** | heap, flash, MCU temperature, RSSI, per-tool call counters |
-| **Models** | the provider catalogue, one click to switch |
-| **Logs** | live console tail with filter/pause/copy |
-| **Cron** | scheduled turns with delivery to log or webhook |
-| **Skills** | procedural memory, create/view/delete, approval queue |
-| **Tools** | every registered tool grouped by toolset, toggleable |
-| **Channels** | Telegram pairing and allowlist |
-| **Config / Keys** | endpoint, model, API key, WiFi, auth token |
-| **System** | diagnostics, checkpoints, backup, reboot, factory reset |
+## Features
 
-Design system: LENS_0 teal — canvas `#041c1c`, cream midground `#ffe6cb`,
-square corners, hairline rules, uppercase micro-labels. No webfonts, no CDN: the
-device has no internet beyond your model endpoint, so everything ships in the bundle.
-
-## Features (parity with C++)
-
-- **Phone-friendly setup:** first boot creates open `Talaria-Agent-Setup` AP with
-  wildcard DNS captive portal. Pick home WiFi + paste AI endpoint in the browser.
-- **Same 10 tools:** `get_status`, `gpio_write`, `gpio_read`, `adc_read`,
-  `wifi_scan`, `mem_save`, `mem_read`, `restart_device`, `blink`, `web_fetch`,
-  plus the agentic set (`cron`, `todo`, `delegate_task`, `skills_*`, `read_file`,
-  `write_file`, `search_files`, `session_search`, `exec_py`).
-- **Same APIs:** `/api/status`, `/api/auth`, `/api/scan`, `/api/wifi`, `/api/agent`,
-  `/api/models`, `/api/config`, `/api/chat`, `/api/chat-stream` (SSE),
-  `/api/debug-raw`, `/api/tools`, `/api/memory`, `/api/reset`, `POST /update`.
-- **Same auth:** optional device token (`Bearer` / `X-Auth-Token`), AP setup stays open.
-- **Same memory:** `/opt/data/memory.txt` (4KB) + one file per conversation
-  under `/opt/data/sessions/` on flash, one write per turn, last-8-turns
-  context injection, system prompt lists only enabled tools.
-- **Conversation survives a refresh:** every completed turn — streamed or tool-driven —
-  is appended to its session file. The chat view rebuilds the transcript from
-  `/api/memory?session=<id>` on load, and the device injects the persisted turns
-  into the next request whenever the browser sends no history. **New Chat**
-  starts another session file; nothing is overwritten. Cron output goes to
-  `/opt/data/activity.jsonl`, so scheduled jobs never appear as conversations.
-
-## What changed (MicroPython realities)
-
-| C++ | MicroPython port |
-|-----|------------------|
-| NVS `Preferences` (`esp32agent` ns) | `config.yaml` in filesystem (hand-editable; `config.json` auto-migrates) |
-| Arduino `WebServer` + `DNSServer` | Microdot (asyncio) + ~40-line UDP wildcard DNS in `net.py` |
-| `PROGMEM` HTML in `web_ui.h` | React SPA compiled into `www/` (index.html + assets) |
-| `Update.h` firmware.bin OTA + ArduinoOTA | `POST /update` saves code/page files then reboots; **MicroPython firmware itself is flashed once over USB** |
-| mDNS `talaria-agent.local` | best-effort only (core MicroPython has no mDNS) — use the IP from serial |
-| `HTTPClient` + `WiFiClientSecure` (insecure) | raw `socket` + `ssl` (MicroPython has no cert store; TLS verification none, same as C++). HTTP/1.0 for buffered requests, HTTP/1.1 + chunked decode for SSE; 15–45 s timeouts |
-| `/api/chat-stream` true socket streaming | true streaming too: `stream:true` over HTTP/1.1 raw socket with incremental `Transfer-Encoding: chunked` decode; same `{"delta"}` / `{"reasoning"}` / `{"need_tools":true}` / `[DONE]` contract |
-| `/api/scan` non-blocking async + 202 | blocking scan (~2s) + 30s cache; always `200` |
-| Pin allowlists (classic ESP32) | S3-primary + classic-compat (`agent_tools.pinCanWrite/Read/ADC` auto-detect via `os.uname()`; S3 excludes USB 19/20 and flash 26-32) |
+- **Streaming chat** with tool use — ask in plain language; the agent reads
+  pins, blinks LEDs, scans WiFi, fetches the web, and remembers facts.
+- **Full dashboard** — Chat, Sessions, Files, Analytics, Models, Logs, Cron,
+  Skills, Tools, Channels (Telegram), Config, Keys, System, and Docs.
+- **Persistent memory** — long-term facts plus one transcript file per
+  conversation; refresh the page and the chat is still there.
+- **Schedules (Cron)** — recurring turns with optional workspace scripts,
+  delivered to the log or a webhook.
+- **Telegram channel** — pair the device and chat with the agent remotely.
+- **File management** — browse, edit, and organise files on the device from
+  the browser, with rollback checkpoints.
+- **Setup wizard** — first boot creates an open setup network with a captive
+  portal that walks you through WiFi and provider settings on your phone.
+- **Login gate + device token** — optional token protection for the dashboard
+  and API (`Bearer` / `X-Auth-Token`).
 
 ## Prerequisites
 
-- **ESP32-S3 board** (tested target; classic ESP32 also works) + USB cable.
-- **MicroPython firmware** — the `SPIRAM_OCT` S3 build for this board (8 MB PSRAM).
-- **Python 3 + mpremote** on your PC: `pip install mpremote esptool`.
-- **Node 20+ and pnpm/npm** on your PC, but only if you want to change the UI.
-- 2.4 GHz WiFi, phone/laptop browser, OpenAI-compatible endpoint + key + model.
+- **ESP32-S3 N16R8 board** + USB cable (use the UART/serial port when the
+  board has two USB ports).
+- **MicroPython `ESP32_GENERIC_S3-SPIRAM_OCT` firmware** (the octal-PSRAM S3
+  build from `https://micropython.org/download/ESP32_GENERIC_S3`).
+- **Python 3 on your PC** with `pip install esptool mpremote`.
+- **2.4 GHz WiFi**, plus an **OpenAI-compatible endpoint, API key, and model**
+  (any provider that serves `/chat/completions` and `/models`).
+- **Node 20+** — only needed if you want to change the dashboard itself.
 
 ## Installation
 
 ```powershell
-# 1) Flash MicroPython once (match COM port + .bin you downloaded):
+# 1) Flash MicroPython once (match the COM port + the .bin you downloaded):
 esptool --chip esp32s3 --port COM11 erase_flash
 esptool --chip esp32s3 --port COM11 write_flash -z 0 ESP32_GENERIC_S3-SPIRAM_OCT-*.bin
 
-# 2) Install Microdot onto the board (once). `mip install github:...` does NOT
-#    work for this package — copy the files under /lib/microdot instead, from
+# 2) Install the Microdot web library onto the board (once).
+#    Copy these four files from
 #    https://raw.githubusercontent.com/miguelgrinberg/microdot/main/src/microdot/
 #    (__init__.py, microdot.py, multipart.py, helpers.py)
-#    e.g. mpremote connect COM11 cp microdot.py :/lib/microdot/microdot.py
+#    into /lib/microdot/ on the device, e.g.:
+python -m mpremote connect COM11 cp microdot.py :/lib/microdot/microdot.py
 
-# 3) Build the dashboard and deploy everything (repeat after every edit):
+# 3) Build the dashboard and deploy everything:
 cd ui; npm install; npm run build; cd ..
 powershell -File deploy.ps1 -Port COM11
 
-# 4) Watch boot logs, note the IP:
+# 4) Watch the boot log and note the IP:
 python -m mpremote connect COM11 reset
 python -m mpremote connect COM11 repl
-# expect: === Agent boot ===, WiFi OK: 192.168.x.x  OR  AP started: Talaria-Agent-Setup
+# expect: === Agent boot ===, then WiFi OK: 192.168.x.x
+#         or AP started: Talaria-Agent-Setup
 ```
 
-Then open `http://<IP>/`. First run: **Setup** walks you through WiFi and the model
-provider; or join `Talaria-Agent-Setup` and the captive portal lands you on `/wifi`.
+Then open `http://<IP>/` in your browser. On a fresh device, join the
+`Talaria-Agent-Setup` network — the captive portal lands you on the setup
+page automatically.
 
-## Project structure
-
-```
-esuyo-esp32-agent-python/
-  main.py            # boot: config -> fs -> wifi/AP -> mdns -> serve (port 80)
-  boot.py            # gc tuning
-  config.py          # config.yaml settings + URL/key helpers (was config.h/.cpp)
-  config_schema.py   # one schema for form fields, categories and YAML order
-  yamlish.py         # small MicroPython YAML subset (no PyYAML on device)
-  net.py             # WiFi STA/AP + wildcard DNS + watchdog (was net.h/.cpp)
-  agent_tools.py     # memory/log, pins, prompt, tools dispatch (was agent_tools.*)
-  tools/             # one module per tool + registry.py (was src/tools/)
-  llm.py             # OpenAI bridge + tool loop (was llm.h/.cpp)
-  server.py          # Microdot app: SPA + JSON APIs + SSE + /update (was routes.*)
-  ui/                # React + TypeScript + Tailwind dashboard source
-    src/components/  #   shell, sidebar, primitives, markdown
-    src/pages/       #   one file per route
-    src/lib/         #   API client, polling hooks, formatters
-    src/index.css    #   Hermes LENS_0 design tokens
-  www/               # BUILD OUTPUT — never edit by hand
-    index.html
-    assets/app.js  assets/app.js.gz
-    assets/app.css assets/app.css.gz
-  tests/             # host-side (CPython) unit tests with hardware stubs
-  deploy.ps1         # USB deploy script (build + copy + verify + reboot)
-```
-
-## Front-end development
+To update code later without a full redeploy:
 
 ```powershell
-cd ui
-npm install
-npm run dev      # Vite dev server; point it at the device for real data
-npm run build    # type-check, bundle, gzip twins, cache-bust stamp
+python scripts/esp_deploy.py server.py llm.py --reset
 ```
-
-`npm run build` writes straight into `www/`. The bundle is one JS chunk and one CSS
-file on purpose: fewer HTTP round trips off a microcontroller. `.gz` twins are
-prebuilt because MicroPython cannot compress at request time — they cut first load
-from ~7 s to ~2 s.
-
-House rules the tests enforce (`tests/test_spa.py`):
-
-- Every sidebar entry has a route, and every route (except the utility screens
-  `/setup`, `/wifi`, `/update`) is in the sidebar.
-- No native `alert`/`confirm`/`prompt` — in-page modals only.
-- No external fonts or CDNs — the dashboard must work on an isolated LAN.
-- Palette stays Hermes teal and corners stay square.
 
 ## Configuration
 
-All settings live in `config.yaml` on the device. The Config page is
-schema-driven: a left-hand section list (Agent, Fallback, Network, Chat,
-Security), a search box, and a raw **YAML** view for hand editing. Both views
-write the same file; the raw editor preserves hand-written comments when the
-document normalizes unchanged. Secrets are masked until you press **Reveal**,
-and masked placeholders are preserved on save.
+All settings live in `config.yaml` on the device. The easiest path is the
+dashboard: **Setup** (first run), **Config** (provider, network, chat, theme,
+security), and **Keys** (device token). You can also edit `config.yaml`
+directly in the Files editor.
 
 ```yaml
 agent:
@@ -178,50 +111,68 @@ chat:
   restore_turns: 20
 security:
   auth_token: ...
-  skills_write_approval: true
 ```
 
-- Join AP `Talaria-Agent-Setup` → `http://192.168.4.1/wifi` → Scan → Save & Reboot.
-- Rejoin home WiFi → `http://<IP>/config` → endpoint base (`/chat/completions` is
-  appended), API key, model → Save (no reboot).
-- Optional device token on `/keys` (min 8 chars). Same `Bearer` header scheme
-  as C++; browser OTA (`/update`) honours it too.
-- Upgrading from an older build: the first boot converts `config.json` into
-  `config.yaml` and keeps `config.json.bak` as a safety copy.
+- **Provider:** endpoint base URL (`/chat/completions` is appended), API key,
+  model id. Optional fallback provider is used only when the primary fails.
+- **WiFi:** set SSID/password under Config → Network, then restart. Changing
+  them from the setup page (`http://192.168.4.1/wifi`) needs no restart dance —
+  just Save & Reboot.
+- **Device token (optional, min 8 chars):** set it on the Keys page. The
+  browser then logs in with username `admin` + the token, and API clients send
+  `Authorization: Bearer <token>` (or `X-Auth-Token: <token>`).
+- **Chat history:** how much of each message is kept (`entry_chars`), how many
+  turns reload after a refresh (`restore_turns`), and the rolling-log budgets.
+- Upgrading from an older build: the first boot converts a legacy
+  `config.json` into `config.yaml` automatically (old file kept as
+  `config.json.bak`).
 
-Handy routes: `/` chat, `/sessions`, `/files`, `/analytics`, `/models`, `/logs`,
-`/cron`, `/skills`, `/tools`, `/channels`, `/config`, `/keys`, `/system`, `/docs`,
-plus `/setup`, `/wifi`, `/update`.
+## Quick Start / Usage
 
-## Usage
+1. Open `http://<IP>/` and finish Setup (WiFi + endpoint + key + model).
+2. Chat — try:
+   - `what is your heap, uptime and IP?`
+   - `scan for nearby wifi networks`
+   - `blink GPIO 2 five times`
+   - `read GPIO 34 as analog`
+   - `remember that my plant is a basil`
+   - `what did I tell you about my plant?`
+   - `fetch https://example.com and summarize it in one line`
+3. Explore: switch models on **Models**, schedule a reminder on **Cron**,
+   manage files on **Files**, check health on **Analytics**/**System**.
+4. Stop/start: `POST /api/reboot` (or the System → Restart button) safely
+   reboots; entering the serial REPL stops the server until reset.
 
-```text
-what is your heap, uptime and IP?
-scan for nearby wifi networks
-blink GPIO 2 five times
-read GPIO 34 as analog
-remember that my plant is a basil
-what did I tell you about my plant?
-fetch https://example.com and summarize it in one line
-```
+Handy pages: `/` chat, `/sessions`, `/files`, `/analytics`, `/models`,
+`/logs`, `/cron`, `/skills`, `/tools`, `/channels`, `/config`, `/keys`,
+`/system`, `/docs` — plus `/setup`, `/wifi`, `/update` for onboarding and
+maintenance.
 
-## Development
+## Troubleshooting / FAQ
 
-- Host tests (no hardware): `pip install microdot pytest`, then `pytest tests/ -q`.
-  Hardware modules (`machine`, `network`, `esp32`, `urequests`, `uasyncio`) are
-  stubbed in `tests/stubs.py`.
-- Add a tool: copy `tools/_template.py.sample` → `tools/tool_x.py`, fill 3 spots,
-  append to `tools/registry.py` (END only — index = bit in `tools_mask`).
-- Debug: REPL logs (`[agent]`, `[tool]`, `[chat]`), `GET /api/status`,
-  `GET /api/debug-raw?message=...` (raw upstream body, key never leaks).
-- In the browser, `window.__talaria` exposes live dashboard state and
-  `window.__talariaNet` the last 40 API calls with timings — the fastest way to
-  diagnose a stalled request on a device with no console.
+| Symptom | What to do |
+|---|---|
+| Board unreachable / IP changed | Re-check the serial boot log for the `WiFi OK:` line — DHCP may have moved the IP. mDNS (`talaria-agent.local`) is best-effort only; use the IP. |
+| Setup network not visible | Trust the device serial log (`AP started: Talaria-Agent-Setup`), not the PC's WiFi scan, which can miss it. |
+| Chat fails / TLS errors | The clock must be plausible for TLS: after a full power cycle confirm `[ntp] time synced:` in the log. On the device run `import gc; print(gc.mem_free())` — it must read ~8 000 000; ~90 000 means the wrong (non-SPIRAM_OCT) firmware was flashed. |
+| Uploads fail verification | Re-run the deploy and compare sizes — only `os.stat(...)[6]` equality counts. Prefer the UART port; COM numbers move on re-enumeration. |
+| REPL contact killed the server | Expected — entering the REPL stops the app. Reset the board (`--reset` flag or RESET button) and verify over HTTP. |
+| First paint is slow / stalls | The app serialises API calls for the microcontroller's network stack; `/api/models` can take ~6 s and is fetched lazily. In the browser console, `window.__talariaNet` shows the last 40 calls with timings. |
+| Forgot the device token | Clear it via serial/`mpremote` by editing `config.yaml` (`security.auth_token`), or factory-reset from System (typed confirmation — deletes config, memory, and sessions). |
 
 ## License
 
 MIT — Copyright (c) 2026 Miguel Perez. See [LICENSE](./LICENSE).
 
-## Acknowledgements
+Dashboard design inspired by [Hermes Agent by Nous Research](https://github.com/NousResearch/hermes-agent) (MIT licensed).
 
-Dashboard design and interaction inspired by [Hermes Agent by Nous Research](https://github.com/NousResearch/hermes-agent) (MIT licensed).
+## Developer Documentation
+
+- [Architecture](./docs/architecture.md) — Stack, boot, and request flow
+- [Project Structure](./docs/project-structure.md) — Repository layout
+- [Development Guide](./docs/development.md) — Local setup, test loop, standards
+- [Build & Deployment](./docs/build-and-deployment.md) — Flashing and deploys
+- [Configuration](./docs/configuration.md) — Settings schema and config APIs
+- [API Reference](./docs/api.md) — Endpoints and built-in tools
+- [Testing](./docs/testing.md) — Test suite layout and conventions
+- [Hermes Agent analysis notes](./docs/hermes-agent-summary.md) — Upstream reference
