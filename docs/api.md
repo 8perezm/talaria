@@ -1,6 +1,6 @@
 # API Reference
 
-Derived from `server.py` route handlers. All `/api/*` routes (except
+Derived from `app/server.py` route handlers. All `/api/*` routes (except
 `/api/auth` and `/api/login`) require auth when a device token is set and the
 device is not in AP setup mode: `Authorization: Bearer <token>` or
 `X-Auth-Token: <token>`. Downloads use `?token=` since plain links cannot set
@@ -68,7 +68,7 @@ headers. Error shape: `{"error": "..."}` with an HTTP status.
 | `POST /api/ui/asset?path=` | Raw-body dashboard bundle push (`index.html`/`favicon.svg`/`assets/*`, ≤900 KB) |
 | `POST /update` | Multipart `firmware` field: code/page files (`.py/.html/.json/.txt/.mpy/.js/.css/.svg/.md`; 900 KB `.js`/`.css`, 200 KB else), then reboot. Refuses device state |
 
-## Tools (built-in, `tools/registry.py`)
+## Tools (built-in, `app/tools/registry.py`)
 
 `get_status`, `gpio_write`, `gpio_read`, `adc_read`, `wifi_scan`, `mem_save`,
 `mem_read`, `restart_device`, `blink`, `web_fetch`, `memory`, `skills_list`,

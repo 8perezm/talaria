@@ -3559,16 +3559,29 @@ def get_app():
                 # keep original .bin behaviour: reject with clear message
                 return {"error": "only .py/.html/.json/.txt/.mpy/.js/.css/.svg/.md accepted (got %s)" % base[:40]}, 400
             # destination: web assets into www/assets/, other html into www/,
-            # code stays at the filesystem root.
+            # application code into app/ (only boot.py/main.py stay at root).
+            # basename-only, so subdirectories cannot be addressed.
             if low.endswith((".js", ".css")):
                 dest = "www/assets/" + base
             elif low.endswith((".html", ".svg", ".md")):
                 dest = "www/" + base
-            else:
+            elif base in ("boot.py", "main.py"):
                 dest = base
-            if dest in ("boot.py", "main.py", "config.py", "agent_tools.py", "llm.py",
-                        "net.py", "server.py") or dest.startswith("tools/") or dest.startswith("www/"):
-                pass  # allowed: code + pages
+            else:
+                dest = "app/" + base
+                if low.endswith(".py"):
+                    # Basename-only uploads cannot address subdirectories, so
+                    # a tool file (app/tools/<base>) would land as a stray in
+                    # app/. Route it to the existing home when there is one.
+                    try:
+                        import os as _os
+                        _os.stat("app/tools/" + base)
+                        dest = "app/tools/" + base
+                    except Exception:
+                        pass
+            if (dest in ("boot.py", "main.py") or dest.startswith("app/")
+                    or dest.startswith("www/")):
+                pass  # allowed: entry points + app code + pages
             try:
                 data = fu.read() if hasattr(fu, "read") else bytes(getattr(fu, "content", b"") or b"")
                 if isinstance(data, str):

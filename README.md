@@ -87,7 +87,7 @@ page automatically.
 To update code later without a full redeploy:
 
 ```powershell
-python scripts/esp_deploy.py server.py llm.py --reset
+python scripts/esp_deploy.py app/server.py app/llm.py --reset
 ```
 
 ## Configuration

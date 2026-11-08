@@ -45,27 +45,32 @@ if (-not (Test-Path "www/index.html")) {
   throw "www/index.html missing — run 'npm run build' inside ui/ first"
 }
 
-Write-Host "Ensuring www/assets exists..."
-& python -m mpremote connect $Port exec "import os`ntry: os.mkdir('www/assets')`nexcept OSError: pass"
-if ($LASTEXITCODE -ne 0) { throw "could not create www/assets" }
+Write-Host "Ensuring app/ and www/assets exist..."
+& python -m mpremote connect $Port exec "import os`nfor _d in ('app', 'www', 'www/assets'):`n try: os.mkdir(_d)`n except OSError: pass"
+if ($LASTEXITCODE -ne 0) { throw "could not create app/ or www/assets" }
 
-Write-Host "Deploying application code..."
+Write-Host "Deploying application code (app/ + entry points)..."
 $code = @(
   "config.py", "config_schema.py", "yamlish.py", "agent_tools.py",
   "agent_core.py", "llm.py", "net.py",
-  "server.py", "main.py", "boot.py", "fsutil.py", "memory.py", "cron.py",
+  "server.py", "fsutil.py", "memory.py", "cron.py",
   "skillstore.py", "sessions.py", "delegate.py", "checkpoint.py", "todo.py",
   "gateway.py", "logbuf.py", "prompt.py", "providers.py", "exec_py.py",
   "read_file.py", "write_file.py", "patch_file.py", "search_files.py"
 )
 foreach ($f in $code) {
+  $local = Join-Path "app" $f
+  if (Test-Path $local) { Copy-Verified $local ("app/" + $f) }
+}
+foreach ($f in @("main.py", "boot.py")) {
   if (Test-Path $f) { Copy-Verified $f $f }
 }
 
-foreach ($dir in @("tools", "skills")) {
+foreach ($dir in @("app/tools", "skills")) {
   if (Test-Path $dir) {
-    Write-Host "-> $dir/"
-    MPRun @("cp", "-r", $dir, ":$dir")
+    $remote = ($dir -replace "\\", "/")
+    Write-Host "-> $remote/"
+    MPRun @("cp", "-r", $dir, ":$remote")
   }
 }
 

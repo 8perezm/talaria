@@ -43,7 +43,7 @@ def _get(path, headers=None):
 
 
 def test_route_registered():
-    src = open(os.path.join(ROOT, "server.py"), encoding="utf-8").read()
+    src = open(os.path.join(ROOT, "app", "server.py"), encoding="utf-8").read()
     assert '@app.get("/api/doctor")' in src
 
 

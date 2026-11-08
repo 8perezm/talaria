@@ -396,7 +396,8 @@ def test_tool_slot_and_dispatch(tmp_path, monkeypatch):
 
 def test_no_regex_in_new_code():
     base = os.path.join(os.path.dirname(__file__), "..")
-    for rel in ("sessions.py", os.path.join("tools", "tool_session_search.py")):
+    for rel in (os.path.join("app", "sessions.py"),
+                os.path.join("app", "tools", "tool_session_search.py")):
         src = open(os.path.join(base, rel), encoding="utf-8").read()
         assert "import re" not in src
         assert "iso-8859-1" not in src and "latin-1" not in src

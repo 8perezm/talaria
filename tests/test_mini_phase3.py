@@ -310,7 +310,7 @@ def test_api_skills_crud_pending_blocklist(tmp_path, monkeypatch):
     res = _request("post", "/api/skills", {"action": "frobnicate"})
     assert res.status_code == 400
     # /update blocklist: staged/bundle state must be refused there
-    src = open(os.path.join(os.path.dirname(__file__), "..", "server.py"),
+    src = open(os.path.join(os.path.dirname(__file__), "..", "app", "server.py"),
                encoding="utf-8").read()
     assert '"bundles.json"' in src and '"pending_mem.json"' in src
     assert "pending_skills" in src  # unreachable-by-construction documented
@@ -359,8 +359,9 @@ def test_tool_slots_and_dispatch(tmp_path, monkeypatch):
 
 def test_no_regex_in_new_code():
     base = os.path.join(os.path.dirname(__file__), "..")
-    for rel in ("skillstore.py", os.path.join("tools", "tool_skills_list.py"),
-                os.path.join("tools", "tool_skill_view.py")):
+    for rel in (os.path.join("app", "skillstore.py"),
+                os.path.join("app", "tools", "tool_skills_list.py"),
+                os.path.join("app", "tools", "tool_skill_view.py")):
         src = open(os.path.join(base, rel), encoding="utf-8").read()
         assert "import re" not in src
         assert "iso-8859-1" not in src and "latin-1" not in src

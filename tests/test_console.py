@@ -11,7 +11,7 @@ PROJ = os.path.join(os.path.dirname(__file__), "..")
 
 
 def test_logs_endpoints_registered():
-    with open(os.path.join(PROJ, "server.py"), encoding="utf-8") as f:
+    with open(os.path.join(PROJ, "app", "server.py"), encoding="utf-8") as f:
         src = f.read()
     assert '"/api/logs"' in src
     assert '"/api/logs/clear"' in src
@@ -27,7 +27,7 @@ def test_main_installs_logbuf_before_first_print():
 
 
 def test_logbuf_source_is_micropython_safe():
-    with open(os.path.join(PROJ, "logbuf.py", ), encoding="utf-8") as f:
+    with open(os.path.join(PROJ, "app", "logbuf.py", ), encoding="utf-8") as f:
         src = f.read()
     code = "\n".join(ln for ln in src.splitlines()
                       if not ln.lstrip().startswith("#"))
