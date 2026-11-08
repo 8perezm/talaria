@@ -6,7 +6,7 @@
 #
 # Prerequisites (one-off):
 #   * MicroPython ESP32_GENERIC_S3-SPIRAM_OCT flashed at offset 0
-#   * /lib/microdot deployed (see AGENTS.md — `mip install` does not work)
+#   * /lib/microdot deployed (see AGENTS.md -- `mip install` does not work)
 #   * tooling: python -m pip install esptool mpremote
 #
 # The UI is a compiled bundle (ui/ -> www/): index.html, assets/app.js,
@@ -42,7 +42,7 @@ if ($Build) {
 }
 
 if (-not (Test-Path "www/index.html")) {
-  throw "www/index.html missing — run 'npm run build' inside ui/ first"
+  throw "www/index.html missing -- run 'npm run build' inside ui/ first"
 }
 
 Write-Host "Ensuring app/ and www/assets exist..."
