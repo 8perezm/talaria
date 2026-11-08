@@ -56,7 +56,7 @@ def test_read_log_tail_order_and_cap(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     assert agent_tools.appendChatLog("u1", "a1")
     assert agent_tools.appendChatLog("u2", "a2")
-    tail, size = server._read_log_tail(agent_tools.LOG_PATH, 3)
+    tail, size = server._read_log_tail(agent_tools.active_log_path(), 3)
     assert size > 0
     assert [e["content"] for e in tail] == ["a1", "u2", "a2"]
     assert tail[0]["role"] == "assistant"
@@ -73,7 +73,7 @@ def test_long_reply_survives_store_and_restore(tmp_path, monkeypatch):
     reply = ("Edinburgh is Scotland's capital. " * 30 + "\n\n") * 7
     reply = reply[:5500]
     assert agent_tools.appendChatLog("tell me about edinburgh", reply)
-    tail, _ = server._read_log_tail(agent_tools.LOG_PATH, 20)
+    tail, _ = server._read_log_tail(agent_tools.active_log_path(), 20)
     assert tail[-1]["role"] == "assistant"
     assert tail[-1]["content"] == reply
     assert len(tail[-1]["content"]) > 800
@@ -88,7 +88,7 @@ def test_twenty_turn_conversation_is_retained(tmp_path, monkeypatch):
     for i in range(20):
         assert agent_tools.appendChatLog("question %d" % i, reply)
     # The chat page asks for 40 lines = 20 turns.
-    tail, size = server._read_log_tail(agent_tools.LOG_PATH, 40)
+    tail, size = server._read_log_tail(agent_tools.active_log_path(), 40)
     assert len(tail) == 40
     assert tail[0]["role"] == "user"
     assert tail[1]["role"] == "assistant"
@@ -133,13 +133,13 @@ def test_log_rotation_keeps_newest_and_respects_budget(tmp_path, monkeypatch):
     text = "y" * 1000
     for i in range(80):  # ~160 KB written -> several rotations
         assert agent_tools.appendChatLog("q%d" % i, text)
-    size = os.stat(agent_tools.LOG_PATH)[6]
+    size = os.stat(agent_tools.active_log_path())[6]
     assert size <= (config.CHAT_LOG_MAX_KB_MIN * 1024) + 4096
-    assert not os.path.exists(agent_tools.LOG_PATH + ".tmp")
-    tail, _ = server._read_log_tail(agent_tools.LOG_PATH, 2, max_chars=2000)
+    assert not os.path.exists(agent_tools.active_log_path() + ".tmp")
+    tail, _ = server._read_log_tail(agent_tools.active_log_path(), 2, max_chars=2000)
     assert tail[-1]["role"] == "assistant"
     assert tail[-1]["content"] == text
-    every, _ = server._read_log_tail(agent_tools.LOG_PATH, 200, max_chars=2000)
+    every, _ = server._read_log_tail(agent_tools.active_log_path(), 200, max_chars=2000)
     assert all(e["content"] != "q0" for e in every)
 
 
@@ -164,7 +164,7 @@ def test_chat_entry_chars_config_endpoint(tmp_path, monkeypatch):
     assert got.json["chat_entry_chars"] == 9000
     # and the configured cap is what the restore path now applies
     assert agent_tools.appendChatLog("q", "x" * 12000)
-    tail, _ = server._read_log_tail(agent_tools.LOG_PATH, 20)
+    tail, _ = server._read_log_tail(agent_tools.active_log_path(), 20)
     assert len(tail[-1]["content"]) == 9000
     config.cfgChatEntryChars = config.DEFAULT_CHAT_ENTRY_CHARS
 
@@ -185,14 +185,14 @@ def test_clear_log_endpoint_removes_history(tmp_path, monkeypatch):
     res = _request("post", "/api/memory", {"clear_log": True})
     assert res.status_code == 200
     assert res.json["cleared_log"] is True
-    assert not os.path.exists(agent_tools.LOG_PATH)
+    assert not os.path.exists(agent_tools.active_log_path())
     # facts are not touched by clearing the chat
     assert agent_tools.appendMemoryFact("basil")
 
 
 def test_stream_turn_is_persisted(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    assert not os.path.exists(agent_tools.LOG_PATH)
+    assert not os.path.exists(agent_tools.active_log_path())
 
     def fake_stream(body):
         yield ("delta", "Hello")
@@ -205,7 +205,7 @@ def test_stream_turn_is_persisted(tmp_path, monkeypatch):
     assert '"delta": "Hello"' in res.text
     assert "[DONE]" in res.text
 
-    with open(agent_tools.LOG_PATH, "r") as f:
+    with open(agent_tools.active_log_path(), "r") as f:
         lines = [json.loads(ln) for ln in f.read().splitlines() if ln.strip()]
     assert {"r": "user", "c": "hi"} in lines
     assert {"r": "assistant", "c": "Hello world"} in lines
@@ -222,7 +222,7 @@ def test_stream_tool_fallback_is_not_logged_twice(tmp_path, monkeypatch):
     assert res.status_code == 200
     assert "need_tools" in res.text
     # /api/chat owns that turn; no half-turn in the log.
-    assert not os.path.exists(agent_tools.LOG_PATH)
+    assert not os.path.exists(agent_tools.active_log_path())
 
 
 def test_stream_upstream_error_is_not_logged(tmp_path, monkeypatch):
@@ -235,7 +235,7 @@ def test_stream_upstream_error_is_not_logged(tmp_path, monkeypatch):
     res = _request("post", "/api/chat-stream", {"message": "hi"})
     assert res.status_code == 200
     assert "upstream HTTP 401" in res.text
-    assert not os.path.exists(agent_tools.LOG_PATH)
+    assert not os.path.exists(agent_tools.active_log_path())
 
 
 def test_history_skips_log_when_client_sends_history(tmp_path, monkeypatch):

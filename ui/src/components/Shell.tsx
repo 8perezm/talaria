@@ -20,8 +20,6 @@ import {
   Wrench,
   X,
   Zap,
-  Power,
-  Lock,
   Unlock,
   LayoutGrid,
 } from 'lucide-react'
@@ -53,10 +51,10 @@ export const NAV: NavItem[] = [
   { path: '/docs', label: 'Documentation', icon: BookOpen },
 ]
 
-const COLLAPSED_KEY = 'hermes-sidebar-collapsed'
+const COLLAPSED_KEY = 'talaria-sidebar-collapsed'
 
 export function Shell({ children }: { children: ReactNode }) {
-  const { status, authed, online, lock } = useAppData()
+  const { status, authed, online } = useAppData()
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem(COLLAPSED_KEY) === 'true'
@@ -80,6 +78,14 @@ export function Shell({ children }: { children: ReactNode }) {
     setMobileOpen(false)
   }, [location.pathname])
 
+  // Locked devices sign in through the full-screen /login gate (Hermes-style).
+  // Open devices (authed) and the onboarding/plumbing screens never redirect.
+  useEffect(() => {
+    if (location.pathname === '/login') return
+    if (location.pathname === '/setup' || location.pathname === '/wifi' || location.pathname === '/update') return
+    if (!authed) navigate('/login', { replace: true })
+  }, [authed, location.pathname, navigate])
+
   useEffect(() => {
     if (!mobileOpen) return
     const prev = document.body.style.overflow
@@ -102,6 +108,18 @@ export function Shell({ children }: { children: ReactNode }) {
         ? { label: 'Running', tone: 'success' as const }
         : { label: 'Locked', tone: 'warning' as const }
 
+  // The login gate paints alone: no sidebar, no header, no system block.
+  if (location.pathname === '/login') {
+    return (
+      <div
+        data-shell="1"
+        className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
+      >
+        <div className="relative z-[2] flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
+      </div>
+    )
+  }
+
   return (
     <div
       data-shell="1"
@@ -118,7 +136,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <Menu className="h-5 w-5" />
         </button>
         <span className="label-display text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
-          Hermes Agent
+          Talaria Agent
         </span>
       </header>
 
@@ -164,7 +182,7 @@ export function Shell({ children }: { children: ReactNode }) {
                   collapsed && 'lg:hidden',
                 )}
               >
-                Hermes
+                Talaria
                 <br />
                 Agent
               </button>
@@ -252,7 +270,7 @@ export function Shell({ children }: { children: ReactNode }) {
               </p>
             </div>
 
-            <SidebarActions collapsed={collapsed} authed={authed} onLock={lock} />
+            <SidebarActions collapsed={collapsed} />
 
             {/* auth row */}
             <div
@@ -262,24 +280,12 @@ export function Shell({ children }: { children: ReactNode }) {
               )}
             >
               <div className="min-w-0">
-                <p className="truncate text-[0.72rem] font-medium text-midground">Local Operator</p>
+                <p className="truncate text-[0.72rem] font-medium text-midground">admin</p>
                 <p className="truncate text-[0.65rem] text-text-faint">
-                  via {authed ? 'token' : 'locked'}
+                  via {authed ? 'login' : 'locked'}
                 </p>
               </div>
-              {authed ? (
-                <button
-                  type="button"
-                  onClick={lock}
-                  title="Lock dashboard"
-                  aria-label="Lock dashboard"
-                  className="text-text-tertiary hover:text-midground"
-                >
-                  <Lock className="h-3.5 w-3.5" />
-                </button>
-              ) : (
-                <Unlock className="h-3.5 w-3.5 text-warning" />
-              )}
+              {!authed && <Unlock className="h-3.5 w-3.5 text-warning" />}
             </div>
 
             {/* footer */}
@@ -293,12 +299,12 @@ export function Shell({ children }: { children: ReactNode }) {
                 {status?.version ? `v${status.version}` : 'v2.0.0'}
               </span>
               <a
-                href="https://hermes-agent.nousresearch.com"
+                href="https://github.com/Esuyo"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="label-display text-[0.68rem] tracking-[0.12em] text-midground hover:opacity-90"
               >
-                Nous Research
+                Esuyo
               </a>
             </div>
           </aside>
@@ -309,30 +315,8 @@ export function Shell({ children }: { children: ReactNode }) {
           </div>
         </div>
       </div>
-
-      {/* collapsed rail icons for the bottom blocks */}
-      {collapsed && (
-        <div className="pointer-events-none fixed bottom-2 left-0 z-50 hidden w-14 lg:block">
-          <div className="pointer-events-auto flex flex-col items-center gap-2">
-            <button
-              type="button"
-              onClick={onLockProxy(authed, lock)}
-              aria-label="Lock dashboard"
-              className="p-1 text-text-tertiary hover:text-midground"
-            >
-              <Lock className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   )
-}
-
-function onLockProxy(authed: boolean, lock: () => void) {
-  return () => {
-    if (authed) lock()
-  }
 }
 
 function SidebarNavLink({
@@ -388,16 +372,13 @@ function SidebarNavLink({
 
 function SidebarActions({
   collapsed,
-  authed,
-  onLock,
 }: {
   collapsed: boolean
-  authed: boolean
-  onLock: () => void
 }) {
   const { push } = useToast()
   const [busy, setBusy] = useState(false)
   const { refreshStatus } = useAppData()
+  const navigate = useNavigate()
 
   const restart = async () => {
     setBusy(true)
@@ -413,24 +394,23 @@ function SidebarActions({
   }
 
   return (
-    <div className={cn('flex flex-col border-t border-border px-1 py-1.5', collapsed && 'lg:hidden')}>
+    <div className={cn('flex items-center justify-between gap-1 border-t border-border px-2 py-1.5', collapsed && 'lg:hidden')}>
+      <button
+        type="button"
+        onClick={() => navigate('/config?section=theme')}
+        title="Open Config -> Theme"
+        className="shrink-0 px-2 py-2 text-left text-[0.72rem] text-text-secondary transition-colors hover:text-midground"
+      >
+        theme
+      </button>
       <button
         type="button"
         onClick={() => void restart()}
         disabled={busy}
-        className="flex items-center gap-3 px-4 py-2 text-left text-[0.72rem] text-text-secondary transition-colors hover:text-midground disabled:opacity-50"
+        className="flex min-w-0 flex-1 items-center justify-end gap-2 px-2 py-2 text-right text-[0.72rem] text-text-secondary transition-colors hover:text-midground disabled:opacity-50"
       >
+        <span className="truncate">{busy ? 'Restarting…' : 'Restart'}</span>
         <RotateCw className={cn('h-3.5 w-3.5 shrink-0', busy && 'animate-spin')} />
-        <span className="truncate">{busy ? 'Restarting…' : 'Restart Agent'}</span>
-      </button>
-      <button
-        type="button"
-        onClick={onLock}
-        disabled={!authed}
-        className="flex items-center gap-3 px-4 py-2 text-left text-[0.72rem] text-text-secondary transition-colors hover:text-midground disabled:opacity-40"
-      >
-        <Power className="h-3.5 w-3.5 shrink-0" />
-        <span className="truncate">Lock Dashboard</span>
       </button>
     </div>
   )

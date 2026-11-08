@@ -1,8 +1,9 @@
-# tool_session_search — keyword recall over current + rotated chat logs. Slot 14.
-# {query, limit?} scans chatlog.jsonl + chatlog.prev.jsonl (case-insensitive
-# AND-of-words, hit-count ranking, recency tiebreak, ±1 neighbors, ~2KB cap).
-# Use when the user asks about something said earlier — especially across a
-# /new rotation, which injectRecentLog (last-8 of CURRENT log only) cannot see.
+# tool_session_search — keyword recall across saved conversations. Slot 14.
+# {query, limit?} scans the newest session files (opt/data/sessions/*.jsonl;
+# case-insensitive AND-of-words, hit-count ranking, recency tiebreak, ±1
+# neighbors, ~2KB cap). Use when the user asks about something said earlier —
+# especially in another conversation, which injectRecentLog (last-8 of the
+# ACTIVE session only) cannot see.
 try:
     import ujson as json
 except ImportError:

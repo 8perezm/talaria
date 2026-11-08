@@ -59,14 +59,64 @@ def _stats_note_turn(chat_ms, upstream_ms=None):
 _MODELS_MAX_IDS = 200
 _MODELS_MAX_BYTES = 131072
 
+# ---------- dashboard login ----------
+# The SPA signs in with a fixed username ("admin") plus the device auth token
+# as the password — the Hermes-style login screen over the existing Bearer
+# mechanism (the device has no cookie/session store, so POST /api/login is a
+# stateless verifier: the browser keeps sending the token as the Bearer).
+LOGIN_USERNAME = "admin"
+
+
+def _verify_login(username, password):
+    """Check a username+password pair against the device auth token.
+
+    Username match is case-insensitive and forgiving of whitespace; the
+    password must equal config.cfgAuthToken exactly (after stripping). When
+    auth is disabled (AP mode or no token configured) any admin login
+    succeeds so an open device can never lock its owner out. Never raises —
+    failures return False. Pure enough for host tests (imports config/net).
+    """
+    try:
+        u = str(username or "").strip().lower()
+    except Exception:
+        return False
+    if u != LOGIN_USERNAME:
+        return False
+    try:
+        p = str(password or "").strip()
+    except Exception:
+        return False
+    try:
+        import net as _net
+        if bool(getattr(_net, "apMode", False)):
+            return True
+    except Exception:
+        pass
+    try:
+        import config as _cfg
+        token = str(getattr(_cfg, "cfgAuthToken", "") or "")
+    except Exception:
+        return False
+    if not token:
+        return True
+    return bool(p) and p == token
+
 # ---------- file manager (Explorer) helpers ----------
 # Canonical implementations live in fsutil.py (shared with the Phase 7 file
 # tools and checkpoint.py). These thin wrappers keep the historic server._fs_*
 # names/signatures (host tests use them) plus the server-local _FS_ROOT
 # override, which is passed through explicitly on every call.
+#
+# User-data home (Hermes parity): `/api/files` is LOCKED to _DATA_ROOT
+# (opt/data); system code at flash `/` is only reachable via the separate
+# `/api/system/files/*` repair hatch. Low-level _fs_* helpers stay
+# full-flash on purpose — the lock lives in the route layer (_files_data_norm)
+# so tests and the system hatch keep direct access.
 _FS_ROOT = ""
 _FS_MAX_READ = 100000
 _FS_MAX_WRITE = 200000
+_DATA_ROOT = "opt/data"
+_DATA_WORKSPACE = "opt/data/workspace"
 
 
 def _fsu():
@@ -119,6 +169,46 @@ def _fs_write_text(norm, content, max_bytes=_FS_MAX_WRITE):
 def _fs_delete(norm):
     """Delete a file or directory tree. Refuses root. Returns '' or err."""
     return _fsu().delete(norm, _FS_ROOT)
+
+
+def _files_data_norm(norm):
+    """Map a Files-API norm into the locked data home, or None if invalid.
+
+    '' (root) -> _DATA_ROOT; an already-data path passes through; anything
+    else is treated as relative to the data home so flash `/` is never
+    addressable through `/api/files`. Mirrors Hermes locked_root.
+    """
+    if norm is None:
+        return None
+    try:
+        if not norm:
+            return _DATA_ROOT
+        if norm == _DATA_ROOT or norm.startswith(_DATA_ROOT + "/"):
+            return norm
+        return _DATA_ROOT + "/" + norm
+    except Exception:
+        return None
+
+
+def _files_data_parent(dnorm):
+    """Parent display path for a data norm, or None at the data root."""
+    try:
+        if not dnorm or dnorm == _DATA_ROOT:
+            return None
+        p = _fs_parent(dnorm)
+        if p == _DATA_ROOT or p.startswith(_DATA_ROOT + "/"):
+            return "/" + p
+        return None
+    except Exception:
+        return None
+
+
+def _ensure_data_tree_best_effort():
+    """mkdir -p opt/data + workspace so the locked root always lists."""
+    try:
+        _fsu().ensure_data_tree(_FS_ROOT)
+    except Exception:
+        pass
 
 
 def _split_url(url):
@@ -227,6 +317,30 @@ def _read_log_tail(path, max_lines=10, max_chars=None, block_bytes=16384):
             continue
         out.append({"role": r, "content": c[:max_chars]})
     return out, total
+
+
+def _resolve_session(raw, activate=False):
+    """(session id, log path) for a request.
+
+    A blank or unusable id means "whatever the web UI had open" (active.json).
+    `activate` persists that choice, which is what makes a reload / a shared
+    link land in the same conversation. Never raises: a broken store falls
+    back to agent_tools.LOG_PATH so chat keeps working.
+    """
+    try:
+        import sessions as _sess
+        sid = _sess.safe_id(raw)
+        if not sid:
+            sid = _sess.active_id()
+        elif activate:
+            _sess.set_active(sid)
+        return sid, _sess.path_for(sid)
+    except Exception:
+        try:
+            import agent_tools as _at
+            return "", _at.active_log_path()
+        except Exception:
+            return "", ""
 
 
 def _resolve_ipv4(host, port):
@@ -571,7 +685,7 @@ def _collect_stats(do_i2c=False):
         import agent_tools as _at
         try:
             import os as _os3
-            s["log_bytes"] = int(_os3.stat(_at.LOG_PATH)[6])
+            s["log_bytes"] = int(_os3.stat(_at.active_log_path())[6])
         except Exception:
             s["log_bytes"] = 0
         try:
@@ -589,7 +703,7 @@ def _collect_stats(do_i2c=False):
             s["config_bytes"] = 0
         try:
             _turns = 0
-            with open(_at.LOG_PATH, "r") as _f:
+            with open(_at.active_log_path(), "r") as _f:
                 for _ln in _f:
                     if _ln.strip():
                         _turns += 1
@@ -814,9 +928,10 @@ def _collect_stats(do_i2c=False):
 _DOCTOR_HEAP_OK = 1000000
 # Same value as net._PLAUSIBLE_TIME (2024-01-01; MicroPython epoch is 2000).
 _DOCTOR_PLAUSIBLE_TIME = 757382400
-_DOCTOR_FILES = ("config.yaml", "config.json", "config.json.bak", "memory.txt", "user.txt",
-                 "chatlog.jsonl", "chatlog.prev.jsonl", "cron.json",
-                 "tg.json")
+_DOCTOR_FILES = ("config.yaml", "config.json", "config.json.bak", "opt/data/memory.txt", "opt/data/user.txt",
+                  "opt/data/cron.json",
+                  "opt/data/sessions/active.json",
+                 "opt/data/tg.json")
 _DOCTOR_UPSTREAM_PORT = 443
 _DOCTOR_UPSTREAM_TIMEOUT = 5
 
@@ -988,7 +1103,7 @@ TOOLSET_MAP = {
     "adc_read": "device", "wifi_scan": "device", "restart_device": "device",
     "blink": "device",
     "mem_save": "memory", "mem_read": "memory", "memory": "memory",
-    "skills_list": "skills", "skill_view": "skills",
+    "skills": "skills", "skill_view": "skills",
     "session_search": "sessions",
     "read_file": "files", "write_file": "files",
     "patch_file": "files", "search_files": "files",
@@ -1215,7 +1330,8 @@ def _collect_backup():
         except Exception:
             out["user"] = ""
         try:
-            tail, nbytes = _read_log_tail(_at.LOG_PATH, _BACKUP_CHATLOG_TAIL)
+            tail, nbytes = _read_log_tail(_at.active_log_path(),
+                                          _BACKUP_CHATLOG_TAIL)
             out["chatlog_tail"] = tail
             out["chatlog_bytes"] = nbytes
         except Exception:
@@ -1298,7 +1414,8 @@ def _collect_backup():
                           "allow": [], "requests": [], "offset": 0}
     out["note"] = ("Secrets redacted: api_key/wifi_pass/auth_token/bot_token "
                    "are never in this payload (masked shapes or presence "
-                   "flags only). No restore in v1 — restore via /files + reboot.")
+                   "flags only). No restore in v1 — restore data files via "
+                   "/api/files and system files via /api/system/files, then reboot.")
     return out
 
 
@@ -1534,7 +1651,7 @@ def get_app():
         if agent_tools.gFsOk:
             try:
                 import os
-                log_bytes = os.stat(agent_tools.LOG_PATH)[6]
+                log_bytes = os.stat(agent_tools.active_log_path())[6]
             except Exception:
                 pass
             try:
@@ -1580,7 +1697,24 @@ def get_app():
 
     @app.get("/api/auth")
     async def _get_auth(request):
-        return {"auth_required": auth_enabled(), "ap_mode": net.apMode}
+        return {"auth_required": auth_enabled(), "ap_mode": net.apMode,
+                "username": LOGIN_USERNAME}
+
+    @app.post("/api/login")
+    async def _login(request):
+        # Stateless Hermes-style verifier: username must be admin (fixed),
+        # password is the device auth token. Not auth-gated (it IS the gate).
+        # Accepts common key variants so hand-rolled clients don't 400.
+        d = _body_json(request)
+        if d is None:
+            return {"error": "invalid JSON"}, 400
+        u = d.get("username", d.get("user", d.get("name", "")))
+        p = d.get("password", d.get("pass", d.get("token", d.get("passwd", ""))))
+        if not str(u or "").strip() or not str(p or ""):
+            return {"error": "username and password required"}, 400
+        if _verify_login(u, p):
+            return {"ok": True}
+        return {"error": "invalid username or password"}, 401
 
     @app.post("/api/auth")
     async def _save_auth(request):
@@ -2016,6 +2150,9 @@ def get_app():
             hist = []
         import llm as _llm
         import agent_tools
+        # Which conversation this turn belongs to. The body carries the id
+        # (explicit beats a shared pointer: two tabs never fight over one).
+        _sid, _log_path = _resolve_session(d.get("session"), activate=True)
         # Phase 8 busy-guard: one upstream turn at a time (shared with the
         # Telegram poller — concurrent TLS turns risk a heap wedge). The
         # web key is mini:web:default; a second surface gets 429.
@@ -2033,7 +2170,8 @@ def get_app():
             try:
                 _t0 = _doctor_now_ms()
                 try:
-                    reply = _llm.callLLMWithTools(msg, hist, out)
+                    reply = _llm.callLLMWithTools(msg, hist, out,
+                                                   log_path=_log_path)
                 finally:
                     # D3 counters: guarded, never breaks the turn.
                     _stats_note_turn(_doctor_since_ms(_t0), _doctor_since_ms(_t0))
@@ -2053,7 +2191,7 @@ def get_app():
             if "not configured" in reply:
                 code = 400
             return {"error": reply}, code
-        resp = {"reply": reply, "model": config.cfgModel}
+        resp = {"reply": reply, "model": config.cfgModel, "session": _sid}
         if out.get("reasoning"):
             resp["reasoning"] = out["reasoning"][:3000]
         if out.get("tools_used"):
@@ -2093,6 +2231,7 @@ def get_app():
         hist = d.get("history", [])
         if not isinstance(hist, list):
             hist = []
+        _sid, _log_path = _resolve_session(d.get("session"), activate=True)
 
         def _events():
             # D3 counters for the streaming path (best-effort wall time from
@@ -2128,7 +2267,7 @@ def get_app():
             # Browser history is authoritative while the page is open; the
             # persisted log is the fallback for a fresh/refreshed page.
             if not hist:
-                agent_tools.injectRecentLog(msgs, msg, 8)
+                agent_tools.injectRecentLog(msgs, msg, 8, path=_log_path)
             _llm.addHistoryCapped(msgs, hist, 8)
             msgs.append({"role": "user", "content": msg[:1500]})
             agent_tools.addToolsArray(req)
@@ -2173,7 +2312,7 @@ def get_app():
                 # Persist the completed turn so a page refresh still has
                 # context (same contract as the non-streaming /api/chat path).
                 try:
-                    agent_tools.appendChatLog(msg, "".join(parts))
+                    agent_tools.appendChatLog(msg, "".join(parts), path=_log_path)
                 except Exception as e:
                     print("[stream] log append failed:", str(e)[:80])
             yield "data: [DONE]\n\n"
@@ -2259,8 +2398,21 @@ def get_app():
                 tail_n = max(1, min(240, int(v)))
         except Exception:
             tail_n = default_tail
-        tail, log_bytes = _read_log_tail(agent_tools.LOG_PATH, tail_n)
+        # ?session=<id> reads one conversation; blank = the active one.
+        # ?activate=1 also persists that choice (Chat uses it on open).
+        try:
+            _want_sess = request.args.get("session", "") if hasattr(request, "args") else ""
+        except Exception:
+            _want_sess = ""
+        try:
+            _act = str(request.args.get("activate", "") if hasattr(request, "args") else "")
+            _want_act = _act.strip().lower() in ("1", "true", "yes")
+        except Exception:
+            _want_act = False
+        _sid, _log_path = _resolve_session(_want_sess, activate=_want_act)
+        tail, log_bytes = _read_log_tail(_log_path, tail_n)
         out = {"memory": mem, "fs_ok": agent_tools.gFsOk,
+               "session": _sid,
                "log_bytes": log_bytes, "log_tail": tail}
         # ?q= keyword search over current + rotated logs (Phase 4 sessions).
         # Kept alongside ?tail=: tail restores the transcript, q recalls
@@ -2331,20 +2483,16 @@ def get_app():
                 return {"error": "%s failed: %s" % (op, str(e)[:80])}, 500
         out = {}
         if d.get("clear_log"):
-            # Phase 4: clear = /new rotation — previous log kept as
-            # chatlog.prev.jsonl (single generation, flash-cheap), fresh
-            # empty current log. Saved memory facts (memory.txt/user.txt),
-            # skills and pending queues are untouched by design.
+            # Legacy alias for "start a new conversation". The old single-log
+            # rotation (chatlog -> chatlog.prev, which DELETED the previous
+            # .prev) is gone: sessions live in opt/data/sessions and a new
+            # one never destroys an existing conversation.
             try:
-                import sessions as _sess_r
-                _rr = _sess_r.rotate()
-                out["rotated"] = bool(_rr.get("rotated"))
+                import sessions as _sess_n
+                out["session"] = _sess_n.new_session()
+                out["rotated"] = True
             except Exception:
-                try:
-                    import os
-                    os.remove(agent_tools.LOG_PATH)
-                except OSError:
-                    pass
+                out["rotated"] = False
             out["cleared_log"] = True
         if d.get("clear_memory"):
             try:
@@ -2364,7 +2512,7 @@ def get_app():
                 import memory as _mm_user
                 _upath = _mm_user.USER_PATH
             except Exception:
-                _upath = "user.txt"
+                _upath = "opt/data/user.txt"
             try:
                 import os
                 os.remove(_upath)
@@ -2519,6 +2667,97 @@ def get_app():
         import sessions as _sess_t
         return _sess_t.trajectory()
 
+    # Sessions page feed: one row per CONVERSATION (a file in
+    # opt/data/sessions), newest first. Separate from /api/trajectory so the
+    # ShareGPT export keeps its exact shape.
+    @app.get("/api/sessions")
+    async def _get_sessions(request):
+        na = _journey_need_auth(request)
+        if na:
+            return na
+        import sessions as _sess_l
+        try:
+            lim = int(request.args.get("limit", "") or 0)
+        except Exception:
+            lim = 0
+        if lim <= 0:
+            lim = _sess_l.LIST_DEFAULT_LIMIT
+        return _sess_l.list_sessions(lim)
+
+    # A new conversation. No file until the first turn, so pressing New Chat
+    # repeatedly cannot litter the store with empty sessions.
+    @app.post("/api/sessions")
+    async def _post_sessions_new(request):
+        na = need_auth(request)
+        if na:
+            return na
+        import sessions as _sess_n
+        sid = _sess_n.new_session()
+        return {"success": True, "session": sid,
+                "path": _sess_n.path_for(sid)}
+
+    @app.post("/api/sessions/activate")
+    async def _post_sessions_activate(request):
+        na = need_auth(request)
+        if na:
+            return na
+        d = _body_json(request)
+        if d is None:
+            return {"error": "invalid JSON"}, 400
+        import sessions as _sess_a
+        sid = _sess_a.safe_id(d.get("id"))
+        if not sid:
+            return {"error": "invalid session id"}, 400
+        _sess_a.set_active(sid)
+        return {"success": True, "session": sid}
+
+    # Whole-conversation export for one Sessions row. Downloaded through a
+    # plain <a>, which cannot set headers, so ?token= is accepted here (same
+    # pattern as /api/files/download and /api/journey).
+    @app.get("/api/sessions/export")
+    async def _get_sessions_export(request):
+        na = _journey_need_auth(request)
+        if na:
+            return na
+        import sessions as _sess_x
+        try:
+            sid_q = request.args.get("id", "") if hasattr(request, "args") else ""
+        except Exception:
+            sid_q = ""
+        res = _sess_x.export_text(sid_q)
+        if not res.get("success"):
+            return {"error": res.get("error", "export failed")}, 404
+        name = "talaria-%s.txt" % res["id"]
+        print("[sessions] export %s (%d messages)" % (res["id"], res["messages"]))
+        return (res["text"], 200,
+                {"Content-Type": "text/plain; charset=utf-8",
+                 "Content-Disposition": 'attachment; filename="%s"' % name})
+
+    # Delete one conversation. The id is a SESSION id now; the old turn ids
+    # (chatlog.jsonl:0:1:abcdef) are refused by the sanitiser, so a stale
+    # client cannot delete a file by accident.
+    @app.post("/api/sessions/delete")
+    async def _post_sessions_delete(request):
+        na = need_auth(request)
+        if na:
+            return na
+        d = _body_json(request)
+        if d is None:
+            return {"error": "invalid JSON"}, 400
+        import sessions as _sess_d
+        try:
+            tid = str(d.get("id", "") or "")
+        except Exception:
+            tid = ""
+        res = _sess_d.delete_session(tid)
+        try:
+            res["ok"] = bool(res.get("success"))
+        except Exception:
+            pass
+        if not res.get("success"):
+            return res, 400
+        return res
+
     # ---------- cron (Phase 5: <=5 scheduled agent turns, 60s tick) ----------
     @app.get("/api/cron")
     async def _get_cron(request):
@@ -2613,7 +2852,11 @@ def get_app():
         seq = logbuf.clear()
         return {"ok": True, "seq": seq}
 
-    # ---------- files (Explorer: list / read / write / upload / download) ----------
+    # ---------- files (Explorer: locked to the user-data home) ----------
+    # Hermes parity: the browser shows /opt/data only, never flash `/`.
+    # Every path is mapped through _files_data_norm, so `/` lists the data
+    # home, `/memory.txt` reads opt/data/memory.txt, and system code is
+    # unreachable here by construction. Use /api/system/files/* for repairs.
     def _files_authed(request):
         if is_authenticated(request):
             return True
@@ -2644,12 +2887,17 @@ def get_app():
         norm = _fs_norm(qp)
         if norm is None:
             return {"error": "invalid path"}, 400
-        entries, err = _fs_list_dir(norm)
+        dnorm = _files_data_norm(norm)
+        if dnorm is None:
+            return {"error": "invalid path"}, 400
+        _ensure_data_tree_best_effort()
+        entries, err = _fs_list_dir(dnorm)
         if err:
             return {"error": err}, 404 if err == "not found" else 400
-        disp = "/" + norm if norm else "/"
-        return {"path": disp, "parent": "/" + _fs_parent(norm) if norm else None,
-                "entries": entries, "count": len(entries)}
+        return {"path": "/" + dnorm, "parent": _files_data_parent(dnorm),
+                "entries": entries, "count": len(entries),
+                "root": "/" + _DATA_ROOT, "locked_root": "/" + _DATA_ROOT,
+                "can_change_path": True}
 
     @app.get("/api/files/content")
     async def _files_content(request):
@@ -2663,11 +2911,14 @@ def get_app():
         norm = _fs_norm(qp)
         if norm is None or not norm:
             return {"error": "invalid path"}, 400
-        res, err, size = _fs_read_text(norm)
+        dnorm = _files_data_norm(norm)
+        if dnorm is None or dnorm == _DATA_ROOT:
+            return {"error": "invalid path"}, 400
+        res, err, size = _fs_read_text(dnorm)
         if err:
             code = 404 if err == "not found" else 400
             return {"error": err, "size": size}, code
-        return {"path": "/" + norm, "size": res["size"],
+        return {"path": "/" + dnorm, "size": res["size"],
                 "truncated": res["truncated"], "content": res["content"]}
 
     @app.get("/api/files/download")
@@ -2682,7 +2933,10 @@ def get_app():
         norm = _fs_norm(qp)
         if norm is None or not norm:
             return {"error": "invalid path"}, 400
-        full = _fs_full(norm)
+        dnorm = _files_data_norm(norm)
+        if dnorm is None or dnorm == _DATA_ROOT:
+            return {"error": "invalid path"}, 400
+        full = _fs_full(dnorm)
         if _fs_is_dir(full) is not False:
             return {"error": "not a file"}, 400
         try:
@@ -2692,7 +2946,7 @@ def get_app():
             return {"error": "read failed: %s" % str(e)[:80]}, 404
         if len(data) > _FS_MAX_WRITE:
             return {"error": "file too large to download (%dB)" % len(data)}, 400
-        name = norm.rsplit("/", 1)[-1]
+        name = dnorm.rsplit("/", 1)[-1]
         low = name.lower()
         ctype = "application/octet-stream"
         if low.endswith(".html") or low.endswith(".htm"):
@@ -2720,40 +2974,28 @@ def get_app():
         norm = _fs_norm(d.get("path", ""))
         if norm is None or not norm:
             return {"error": "invalid path"}, 400
+        dnorm = _files_data_norm(norm)
+        if dnorm is None or dnorm == _DATA_ROOT:
+            return {"error": "invalid path"}, 400
+        # config.yaml lives at flash `/`, outside the locked home — it is
+        # owned by the Config page and the system hatch, never by Files.
+        if dnorm == config.CONFIG_PATH or dnorm == _DATA_ROOT + "/config.yaml":
+            return {"error": "config.yaml lives outside /opt/data - edit it via the Config page"}, 400
         content = d.get("content", "")
         if not isinstance(content, str):
             return {"error": "content must be a string"}, 400
-        # config.yaml is hand-editable from the Files page too. Validate it
-        # before writing and reload globals immediately so the edit applies
-        # without a reboot (the Config page's YAML editor does the same).
-        if norm == config.CONFIG_PATH:
-            try:
-                import yamlish
-                parsed = yamlish.loads(content)
-                if not isinstance(parsed, dict) or not parsed:
-                    return {"error": "config.yaml must be a non-empty YAML mapping"}, 400
-            except Exception as e:
-                return {"error": "invalid config.yaml: %s" % str(e)[:160]}, 400
         try:
             import checkpoint as _cp_save
-            _cp_save.backup(norm)  # best-effort .bak; write proceeds regardless
+            _cp_save.backup(dnorm)  # best-effort .bak; write proceeds regardless
         except Exception:
             pass
-        err = _fs_write_text(norm, content)
+        err = _fs_write_text(dnorm, content)
         if err:
             code = 400
             if err.startswith("file too large"):
                 code = 413
             return {"error": err}, code
-        if norm == config.CONFIG_PATH:
-            try:
-                config.loadConfig()
-            except Exception as e:
-                return {"error": "saved but config reload failed: %s"
-                                 % str(e)[:120]}, 500
-            return {"ok": True, "path": "/" + norm,
-                    "size": len(content.encode("utf-8")), "reloaded": True}
-        return {"ok": True, "path": "/" + norm, "size": len(content.encode("utf-8"))}
+        return {"ok": True, "path": "/" + dnorm, "size": len(content.encode("utf-8"))}
 
     @app.post("/api/files/mkdir")
     async def _files_mkdir(request):
@@ -2766,9 +3008,12 @@ def get_app():
         norm = _fs_norm(d.get("path", ""))
         if norm is None or not norm:
             return {"error": "invalid path"}, 400
+        dnorm = _files_data_norm(norm)
+        if dnorm is None or dnorm == _DATA_ROOT:
+            return {"error": "invalid path"}, 400
         import os as _os
         cur = ""
-        for seg in norm.split("/"):
+        for seg in dnorm.split("/"):
             cur = seg if not cur else cur + "/" + seg
             if _fs_is_dir(_fs_full(cur)) is True:
                 continue
@@ -2776,7 +3021,7 @@ def get_app():
                 _os.mkdir(_fs_full(cur))
             except Exception as e:
                 return {"error": "mkdir failed: %s" % str(e)[:80]}, 400
-        return {"ok": True, "path": "/" + norm}
+        return {"ok": True, "path": "/" + dnorm}
 
     @app.post("/api/files/delete")
     async def _files_delete(request):
@@ -2789,11 +3034,14 @@ def get_app():
         norm = _fs_norm(d.get("path", ""))
         if norm is None or not norm:
             return {"error": "invalid path"}, 400
-        err = _fs_delete(norm)
+        dnorm = _files_data_norm(norm)
+        if dnorm is None or dnorm == _DATA_ROOT:
+            return {"error": "invalid path"}, 400
+        err = _fs_delete(dnorm)
         if err:
             code = 404 if err == "not found" else 400
             return {"error": err}, code
-        return {"ok": True, "path": "/" + norm}
+        return {"ok": True, "path": "/" + dnorm}
 
     @app.post("/api/files/rename")
     async def _files_rename(request):
@@ -2807,21 +3055,25 @@ def get_app():
         dst = _fs_norm(d.get("dst", d.get("to", "")))
         if src is None or not src or dst is None or not dst:
             return {"error": "invalid src/dst"}, 400
-        if src == dst:
+        dsrc = _files_data_norm(src)
+        ddst = _files_data_norm(dst)
+        if dsrc is None or dsrc == _DATA_ROOT or ddst is None or ddst == _DATA_ROOT:
+            return {"error": "invalid src/dst"}, 400
+        if dsrc == ddst:
             return {"error": "src == dst"}, 400
         import os as _os
-        if _fs_is_dir(_fs_full(src)) is None:
+        if _fs_is_dir(_fs_full(dsrc)) is None:
             return {"error": "not found"}, 404
-        if _fs_is_dir(_fs_full(dst)) is not None:
+        if _fs_is_dir(_fs_full(ddst)) is not None:
             return {"error": "destination exists"}, 409
-        err = _fs_ensure_parent(dst)
+        err = _fs_ensure_parent(ddst)
         if err:
             return {"error": err}, 400
         try:
-            _os.rename(_fs_full(src), _fs_full(dst))
+            _os.rename(_fs_full(dsrc), _fs_full(ddst))
         except Exception as e:
             return {"error": "rename failed: %s" % str(e)[:80]}, 400
-        return {"ok": True, "src": "/" + src, "dst": "/" + dst}
+        return {"ok": True, "src": "/" + dsrc, "dst": "/" + ddst}
 
     @app.post("/api/files/upload")
     async def _files_upload(request):
@@ -2833,6 +3085,9 @@ def get_app():
         except Exception:
             qp = "/"
         dest = _fs_norm(qp)
+        if dest is None:
+            return {"error": "invalid path"}, 400
+        dest = _files_data_norm(dest)
         if dest is None:
             return {"error": "invalid path"}, 400
         files = {}
@@ -2857,6 +3112,8 @@ def get_app():
                             raw = raw.decode("utf-8", "ignore")
                         cand = _fs_norm(raw)
                         if cand is not None:
+                            cand = _files_data_norm(cand)
+                        if cand is not None:
                             dest = cand
                         del files[k]
                         break
@@ -2874,6 +3131,9 @@ def get_app():
             norm = ((dest + "/" + base) if dest else base)
             norm = _fs_norm(norm)
             if norm is None or not norm:
+                continue
+            norm = _files_data_norm(norm)
+            if norm is None or norm == _DATA_ROOT:
                 continue
             try:
                 data = fu.read() if hasattr(fu, "read") else bytes(getattr(fu, "content", b"") or b"")
@@ -2902,6 +3162,192 @@ def get_app():
         if not saved:
             return {"error": "no acceptable files"}, 400
         return {"ok": True, "saved": saved, "path": "/" + dest if dest else "/"}
+
+    # ---------- system files (repair hatch: full flash, deliberate) ----------
+    # `/api/files` is locked to /opt/data. This hatch exposes flash `/`
+    # (server.py, boot.py, lib/, www/, config.yaml) for repairs. Same auth,
+    # same 100/200KB caps, same .bak checkpoints — but a separate route + UI
+    # surface so a normal Files click can never brick the device. config.yaml
+    # edits validate + reload here (moved from /api/files/save); the Config
+    # page remains the primary config editor.
+    @app.get("/api/system/files")
+    async def _sysfiles_list(request):
+        na = _files_need_auth(request)
+        if na:
+            return na
+        try:
+            qp = request.args.get("path", "/") if hasattr(request, "args") else "/"
+        except Exception:
+            qp = "/"
+        norm = _fs_norm(qp)
+        if norm is None:
+            return {"error": "invalid path"}, 400
+        entries, err = _fs_list_dir(norm)
+        if err:
+            return {"error": err}, 404 if err == "not found" else 400
+        disp = "/" + norm if norm else "/"
+        return {"path": disp, "parent": "/" + _fs_parent(norm) if norm else None,
+                "entries": entries, "count": len(entries)}
+
+    @app.get("/api/system/files/content")
+    async def _sysfiles_content(request):
+        na = _files_need_auth(request)
+        if na:
+            return na
+        try:
+            qp = request.args.get("path", "") if hasattr(request, "args") else ""
+        except Exception:
+            qp = ""
+        norm = _fs_norm(qp)
+        if norm is None or not norm:
+            return {"error": "invalid path"}, 400
+        res, err, size = _fs_read_text(norm)
+        if err:
+            code = 404 if err == "not found" else 400
+            return {"error": err, "size": size}, code
+        return {"path": "/" + norm, "size": res["size"],
+                "truncated": res["truncated"], "content": res["content"]}
+
+    @app.get("/api/system/files/download")
+    async def _sysfiles_download(request):
+        na = _files_need_auth(request)
+        if na:
+            return na
+        try:
+            qp = request.args.get("path", "") if hasattr(request, "args") else ""
+        except Exception:
+            qp = ""
+        norm = _fs_norm(qp)
+        if norm is None or not norm:
+            return {"error": "invalid path"}, 400
+        full = _fs_full(norm)
+        if _fs_is_dir(full) is not False:
+            return {"error": "not a file"}, 400
+        try:
+            with open(full, "rb") as f:
+                data = f.read(_FS_MAX_WRITE + 1)
+        except Exception as e:
+            return {"error": "read failed: %s" % str(e)[:80]}, 404
+        if len(data) > _FS_MAX_WRITE:
+            return {"error": "file too large to download (%dB)" % len(data)}, 400
+        name = norm.rsplit("/", 1)[-1]
+        disp = name.replace('"', "_")
+        return data, 200, {"Content-Type": "application/octet-stream",
+                           "Content-Disposition": 'attachment; filename="%s"' % disp}
+
+    @app.post("/api/system/files/save")
+    async def _sysfiles_save(request):
+        na = _files_need_auth(request)
+        if na:
+            return na
+        d = _body_json(request)
+        if d is None:
+            return {"error": "invalid JSON"}, 400
+        norm = _fs_norm(d.get("path", ""))
+        if norm is None or not norm:
+            return {"error": "invalid path"}, 400
+        content = d.get("content", "")
+        if not isinstance(content, str):
+            return {"error": "content must be a string"}, 400
+        if norm == config.CONFIG_PATH:
+            try:
+                import yamlish
+                parsed = yamlish.loads(content)
+                if not isinstance(parsed, dict) or not parsed:
+                    return {"error": "config.yaml must be a non-empty YAML mapping"}, 400
+            except Exception as e:
+                return {"error": "invalid config.yaml: %s" % str(e)[:160]}, 400
+        try:
+            import checkpoint as _cp_sys
+            _cp_sys.backup(norm)  # best-effort .bak; write proceeds regardless
+        except Exception:
+            pass
+        err = _fs_write_text(norm, content)
+        if err:
+            code = 400
+            if err.startswith("file too large"):
+                code = 413
+            return {"error": err}, code
+        if norm == config.CONFIG_PATH:
+            try:
+                config.loadConfig()
+            except Exception as e:
+                return {"error": "saved but config reload failed: %s"
+                                 % str(e)[:120]}, 500
+            return {"ok": True, "path": "/" + norm,
+                    "size": len(content.encode("utf-8")), "reloaded": True}
+        return {"ok": True, "path": "/" + norm, "size": len(content.encode("utf-8"))}
+
+    @app.post("/api/system/files/mkdir")
+    async def _sysfiles_mkdir(request):
+        na = _files_need_auth(request)
+        if na:
+            return na
+        d = _body_json(request)
+        if d is None:
+            return {"error": "invalid JSON"}, 400
+        norm = _fs_norm(d.get("path", ""))
+        if norm is None or not norm:
+            return {"error": "invalid path"}, 400
+        import os as _os
+        cur = ""
+        for seg in norm.split("/"):
+            cur = seg if not cur else cur + "/" + seg
+            if _fs_is_dir(_fs_full(cur)) is True:
+                continue
+            try:
+                _os.mkdir(_fs_full(cur))
+            except Exception as e:
+                return {"error": "mkdir failed: %s" % str(e)[:80]}, 400
+        return {"ok": True, "path": "/" + norm}
+
+    @app.post("/api/system/files/delete")
+    async def _sysfiles_delete(request):
+        na = _files_need_auth(request)
+        if na:
+            return na
+        d = _body_json(request)
+        if d is None:
+            return {"error": "invalid JSON"}, 400
+        norm = _fs_norm(d.get("path", ""))
+        if norm is None or not norm:
+            return {"error": "invalid path"}, 400
+        # Never delete the data home itself through the hatch — use /api/reset.
+        if norm == _DATA_ROOT or norm == "opt":
+            return {"error": "refusing to delete /opt/data (use /api/reset)"}, 400
+        err = _fs_delete(norm)
+        if err:
+            code = 404 if err == "not found" else 400
+            return {"error": err}, code
+        return {"ok": True, "path": "/" + norm}
+
+    @app.post("/api/system/files/rename")
+    async def _sysfiles_rename(request):
+        na = _files_need_auth(request)
+        if na:
+            return na
+        d = _body_json(request)
+        if d is None:
+            return {"error": "invalid JSON"}, 400
+        src = _fs_norm(d.get("src", d.get("from", "")))
+        dst = _fs_norm(d.get("dst", d.get("to", "")))
+        if src is None or not src or dst is None or not dst:
+            return {"error": "invalid src/dst"}, 400
+        if src == dst:
+            return {"error": "src == dst"}, 400
+        import os as _os
+        if _fs_is_dir(_fs_full(src)) is None:
+            return {"error": "not found"}, 404
+        if _fs_is_dir(_fs_full(dst)) is not None:
+            return {"error": "destination exists"}, 409
+        err = _fs_ensure_parent(dst)
+        if err:
+            return {"error": err}, 400
+        try:
+            _os.rename(_fs_full(src), _fs_full(dst))
+        except Exception as e:
+            return {"error": "rename failed: %s" % str(e)[:80]}, 400
+        return {"ok": True, "src": "/" + src, "dst": "/" + dst}
 
     # ---------- rollback (Phase 7: .bak snapshots kept by writes/uploads) ----------
     @app.get("/api/rollback")
@@ -2958,11 +3404,12 @@ def get_app():
 
     # ---------- reset ----------
     # VERIFIED SEMANTICS (D5): POST /api/reset is a FACTORY-WIPE + reboot —
-    # it deletes agent_tools.LOG_PATH (chatlog.jsonl), agent_tools.MEM_PATH
-    # (memory.txt) and config.CONFIG_PATH (config.yaml: WiFi creds, API key,
-    # auth token), THEN machine.reset(). Legacy config.json / config.json.bak
-    # are removed too. No dashboard button wires to it; the /system Restart
-    # card uses POST /api/reboot (soft reset only).
+    # it deletes every saved conversation (opt/data/sessions/*), the activity
+    # log, agent_tools.MEM_PATH (opt/data/memory.txt) and config.CONFIG_PATH
+    # (config.yaml: WiFi creds, API key, auth token), THEN machine.reset().
+    # Legacy config.json / config.json.bak are removed too. No dashboard
+    # button wires to it; the /system Restart card uses POST /api/reboot
+    # (soft reset only).
     @app.post("/api/reset")
     async def _reset(request):
         na = need_auth(request)
@@ -2971,9 +3418,26 @@ def get_app():
         import agent_tools
         try:
             import os
-            paths = [agent_tools.LOG_PATH, agent_tools.MEM_PATH,
+            paths = [agent_tools.active_log_path(), agent_tools.MEM_PATH,
                      config.CONFIG_PATH, config.LEGACY_CONFIG_PATH,
                      config.LEGACY_BACKUP_PATH]
+            try:
+                import sessions as _sess_r
+                paths.append(_sess_r.ACTIVITY_PATH)
+                paths.append(_sess_r.ACTIVITY_PREV_PATH)
+                try:
+                    _names = os.listdir(_sess_r.SESS_DIR)
+                except Exception:
+                    _names = []
+                for _fn in _names:
+                    try:
+                        if isinstance(_fn, bytes):
+                            _fn = _fn.decode()
+                    except Exception:
+                        continue
+                    paths.append(_sess_r.SESS_DIR + "/" + _fn)
+            except Exception:
+                pass
             for p in paths:
                 try:
                     os.remove(p)
@@ -2997,8 +3461,9 @@ def get_app():
 
     # ---------- reboot (D5: soft reset ONLY — wipes nothing) ----------
     # Unlike /api/reset (factory-wipe + reboot, see above), this only
-    # reboots: config.yaml, memory.txt/user.txt, chatlog.jsonl, cron.json
-    # and tg.json all survive. The /system Restart card uses this endpoint.
+    # reboots: config.yaml, opt/data/memory.txt+user.txt, every conversation
+    # under opt/data/sessions/, opt/data/cron.json and opt/data/tg.json all
+    # survive. The /system Restart card uses this endpoint.
     @app.post("/api/reboot")
     async def _reboot(request):
         na = need_auth(request)

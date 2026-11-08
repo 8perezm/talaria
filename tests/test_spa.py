@@ -39,6 +39,7 @@ ROUTES = [
     "/channels",
     "/config",
     "/keys",
+    "/login",
     "/system",
     "/docs",
     "/setup",
@@ -211,7 +212,8 @@ def test_nav_and_router_agree():
     redirects = {"/agent", "/functions", "/stats", "/journey", "/admin", "*"}
     # …except the onboarding/plumbing screens, which are linked from the pages
     # that own them (Config, System, the AP captive portal) rather than the nav.
-    utilities = {"/setup", "/wifi", "/update"}
+    # /login is the full-screen auth gate, not a sidebar destination.
+    utilities = {"/setup", "/wifi", "/update", "/login"}
     for path in _router_paths():
         if path in redirects or path in utilities:
             continue
@@ -238,7 +240,7 @@ def _ui_sources():
 
 def test_no_native_dialogs_anywhere():
     # Native dialogs are banned app-wide: they block the JS thread on a slow
-    # device and look nothing like the Hermes shell. In-page modals only.
+    # device and look nothing like the Talaria shell. In-page modals only.
     banned = re.compile(r"(?:^|[^\w.])(alert|prompt)\s*\(")
     bare_confirm = re.compile(r"(?:^|[^\w.])confirm\s*\(")
     hits = []
@@ -257,9 +259,15 @@ def test_no_native_dialogs_anywhere():
 
 
 def test_no_external_fetches_in_the_ui():
-    # The device serves this app on an isolated LAN: no CDN, no webfonts.
+    # The device serves this app on an isolated LAN: no CDN, no bundled
+    # webfonts. The single carve-out is the Config -> Theme font loader
+    # (ui/src/lib/theme.ts), which fetches user-selected Google Fonts on
+    # demand in the browser only — offline, the system stacks render.
     for path in _ui_sources():
         src = _read(path)
+        if path.replace("\\", "/").endswith("lib/theme.ts"):
+            assert "cdn." not in src, path
+            continue
         assert "fonts.googleapis" not in src, path
         assert "cdn." not in src, path
     css = _read(os.path.join(WWW, "assets", "app.css"))
@@ -267,18 +275,50 @@ def test_no_external_fetches_in_the_ui():
     assert "url(http" not in css
 
 
-def test_design_tokens_are_the_hermes_palette():
+def test_design_tokens_are_the_talaria_palette():
     css = _read(os.path.join(UI, "index.css"))
-    assert "--background-base: #041c1c" in css
-    assert "--midground-base: #ffe6cb" in css
+    assert "--background-base: #14161b" in css
+    assert "--midground-base: #dfe3ea" in css
     # Square corners are part of the identity, not an accident.
     assert "--radius: 0px" in css
+
+
+def test_clickable_actions_show_the_hand_cursor():
+    # Tailwind v4's preflight resets buttons to the default arrow, which reads
+    # as "not clickable" next to anchors. The base layer opts the whole element
+    # back in, so no page needs a per-button cursor-pointer.
+    css = _read(os.path.join(UI, "index.css"))
+    assert re.search(r"button:not\(:disabled\)\s*\{\s*cursor:\s*pointer;", css), \
+        "base layer must give enabled buttons the hand cursor"
+    # The only allowed opt-out is the full-screen modal backdrop: a dismiss
+    # layer, not an action, and a hand over the whole viewport would be noise.
+    for root, _dirs, files in os.walk(UI):
+        for fn in files:
+            if not fn.endswith((".ts", ".tsx")):
+                continue
+            full = os.path.join(root, fn)
+            if "cursor-default" in _read(full):
+                assert "fixed inset-0" in _read(full), full
 
 
 def test_no_legacy_token_storage_key_regression():
     # Existing browsers keep their unlock state across the upgrade.
     api = _read(os.path.join(UI, "lib", "api.ts"))
     assert "esp32_token" in api
+
+
+def test_login_gate_shape():
+    # /login is the Hermes-style gate: fixed admin identity, password field,
+    # no sidebar chrome, locked devices redirect to it.
+    app = _read(os.path.join(UI, "App.tsx"))
+    assert "/login" in app and "LoginPage" in app
+    login = _read(os.path.join(UI, "pages", "LoginPage.tsx"))
+    assert "admin" in login
+    assert 'name="username"' in login and 'name="password"' in login
+    assert "unlock(username" in login or "unlock(" in login
+    shell = _read(os.path.join(UI, "components", "Shell.tsx"))
+    assert "'/login'" in shell or '"/login"' in shell
+    assert "location.pathname === '/login'" in shell or 'location.pathname === "/login"' in shell
 
 
 def test_agents_field_notes_describe_the_shipped_spa():

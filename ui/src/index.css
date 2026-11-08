@@ -1,32 +1,34 @@
 @import 'tailwindcss';
 
 /* ===================================================================
-   Hermes Agent — LENS_0 "Hermes Teal" design tokens.
+   Talaria Agent — graphite design tokens (palette inherited from the
+   Hermes dashboard this UI is modelled on).
 
    Ported 1:1 from the upstream dashboard's `web/src/index.css`
-   (@nous-research/ui v0.19.1 globals). The palette is the canonical
-   Hermes look: a near-black deep teal canvas with a warm cream
-   midground, square corners, hairline cream rules and uppercase
-   micro-labels with wide tracking.
+   (@nous-research/ui v0.19.1 globals). The default scheme is graphite:
+   a near-black neutral canvas with a light grey midground, square
+   corners, hairline rules and uppercase micro-labels with wide tracking.
 
    Deliberate deviations for an offline ESP32:
-     * No webfonts. The DS ships Collapse / Rules / Mondwest as files
+     * No bundled webfonts. The DS ships Collapse / Rules / Mondwest as files
        we cannot legally or practically redistribute here, and the
        device has no internet to fetch them. The system stack with the
-       same weights/tracking reads almost identically.
+       same weights/tracking reads almost identically. (Carve-out: Config ->
+       Theme loads user-selected Google Fonts on demand in the _browser_
+       only — see ui/src/lib/theme.ts. Offline the stacks above render.)
      * No noise/grain texture pass (costs paint time on weak GPUs).
    =================================================================== */
 
 :root {
-  /* LENS_0 palette */
+  /* graphite palette (default scheme) */
   --foreground: color-mix(in srgb, #ffffff 0%, transparent);
   --foreground-base: #ffffff;
   --foreground-alpha: 0;
-  --midground: color-mix(in srgb, #ffe6cb 100%, transparent);
-  --midground-base: #ffe6cb;
+  --midground: color-mix(in srgb, #dfe3ea 100%, transparent);
+  --midground-base: #dfe3ea;
   --midground-alpha: 1;
-  --background: color-mix(in srgb, #041c1c 100%, transparent);
-  --background-base: #041c1c;
+  --background: color-mix(in srgb, #14161b 100%, transparent);
+  --background-base: #14161b;
   --background-alpha: 1;
 
   /* Typography tokens */
@@ -38,13 +40,16 @@
   --theme-base-size: 15px;
   --theme-line-height: 1.55;
   --theme-letter-spacing: 0;
+  /* --theme-headers-size / --theme-mono-size are set on <html> at runtime
+     only while they differ from the Theme defaults (removed on reset), so
+     the var() fallbacks below reproduce the stock look pixel-for-pixel. */
 
   /* Layout tokens */
   --radius: 0px;
   --theme-radius: 0px;
 
   /* Data-series accents */
-  --series-input-token: #ffe6cb;
+  --series-input-token: #dfe3ea;
   --series-output-token: #34d399;
 }
 
@@ -87,8 +92,13 @@ samp,
 small {
   font-size: 1.0625rem;
 }
-code {
-  font-size: 0.875rem;
+code,
+kbd,
+samp {
+  font-size: var(--theme-mono-size, 0.875rem);
+}
+pre {
+  font-size: var(--theme-mono-size, 1em);
 }
 
 /* Shadcn-compat token surface, exactly as upstream maps it. */
@@ -110,7 +120,7 @@ code {
   --color-muted-foreground: var(--color-text-secondary);
   --color-accent: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
   --color-accent-foreground: var(--midground);
-  --color-destructive: #fb2c36;
+  --color-destructive: #fb5e5e;
   --color-destructive-foreground: #ffffff;
   --color-success: #4ade80;
   --color-warning: #ffbd38;
@@ -163,6 +173,17 @@ code {
     font: inherit;
     color: inherit;
   }
+  /* Clickable actions show the hand. Tailwind v4's preflight resets buttons
+     to the default arrow, which reads as "not clickable" next to anchors —
+     every enabled button in the app is an action, so opt the whole element
+     back in here instead of sprinkling cursor-pointer per file. Disabled
+     buttons keep the arrow (or an explicit not-allowed where set). */
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+  input[type='range'] {
+    accent-color: var(--midground-base);
+  }
   :focus-visible {
     outline: 1px solid var(--midground-base);
     outline-offset: 1px;
@@ -171,8 +192,12 @@ code {
 
 @layer components {
   /* ---- micro-label: the DS "display" text role ------------------- */
+  /*  Every heading/label surface uses --theme-font-display so the
+      Config -> Theme "Headers font" reaches all of them, not just the
+      sidebar. With the stock theme display == sans, so nothing moves.   */
   .label-display {
     font-family: var(--theme-font-display);
+    font-size: var(--theme-headers-size, inherit);
     text-transform: uppercase;
     letter-spacing: 0.12em;
     font-weight: 400;
@@ -250,7 +275,8 @@ code {
     min-height: 3rem;
     padding: 0.6rem 0.9375rem;
     border-bottom: 1px solid var(--color-border);
-    font-size: 0.95rem;
+    font-family: var(--theme-font-display);
+    font-size: var(--theme-headers-size, 0.95rem);
     letter-spacing: 0.01em;
     color: var(--midground-base);
   }
@@ -284,6 +310,7 @@ code {
   }
   .field-label {
     display: block;
+    font-family: var(--theme-font-display);
     font-size: 0.62rem;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -298,6 +325,7 @@ code {
     gap: 0.3rem;
     border: 1px solid var(--color-border);
     padding: 0.05rem 0.45rem;
+    font-family: var(--theme-font-display);
     font-size: 0.62rem;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -321,6 +349,7 @@ code {
   .table th {
     text-align: left;
     font-weight: 400;
+    font-family: var(--theme-font-display);
     font-size: 0.62rem;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -437,6 +466,7 @@ code {
 .md h1,
 .md h2,
 .md h3 {
+  font-family: var(--theme-font-display);
   font-size: 0.95rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -480,4 +510,34 @@ code {
   border: 1px solid var(--color-border);
   padding: 0.25rem 0.5rem;
   text-align: left;
+}
+
+/* Highlighted file view (Files -> open file -> View tab). Read-only
+   rendering of `highlightToHtml` output: plain cream base text with a
+   small code-only accent set (green strings, yellow keywords, sky
+   numbers, white calls/keys, faint italic comments). The accents live
+   only here — the surrounding chrome stays in the Talaria palette. */
+.code-view {
+  margin: 0;
+  white-space: pre;
+  color: var(--midground-base);
+}
+.code-view code {
+  font-family: inherit;
+}
+.code-view .tok-c {
+  color: color-mix(in srgb, var(--midground-base) 34%, transparent);
+  font-style: italic;
+}
+.code-view .tok-s {
+  color: #4ade80;
+}
+.code-view .tok-k {
+  color: #ffbd38;
+}
+.code-view .tok-n {
+  color: #7dd3fc;
+}
+.code-view .tok-f {
+  color: #ffffff;
 }

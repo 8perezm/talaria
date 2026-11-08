@@ -237,7 +237,7 @@ def try_start_mdns():
         import mdns  # noqa
         print("[mdns] module present (not started by default)")
     except Exception:
-        print("[mdns] http://esp32-agent.local (mDNS not available on MicroPython; use IP)")
+        print("[mdns] http://talaria-agent.local (mDNS not available on MicroPython; use IP)")
 
 
 def ensure_dns(host="api.deepinfra.com"):

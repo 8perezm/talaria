@@ -10,8 +10,17 @@ try:
 except ImportError:
     gc = None
 
-LOG_PATH = "chatlog.jsonl"
-MEM_PATH = "memory.txt"
+# The active conversation. sessions.ensure_store() repoints this at
+# opt/data/sessions/<id>.jsonl on boot (legacy boards migrate their single
+# chatlog.jsonl into that store); it stays a module global because status,
+# backup, doctor and the host tests all treat it as "the current chat log".
+LOG_PATH = "opt/data/chatlog.jsonl"
+MEM_PATH = "opt/data/memory.txt"
+# Cron / autonomous events. Deliberately NOT a session: keeping job output
+# out of conversations stops it being listed as a chat and being injected as
+# fake user/assistant history on the next web turn.
+ACTIVITY_MAX_BYTES = 131072  # 128 KB
+ACTIVITY_KEEP_BYTES = 65536  # keep newest 64 KB
 # Rolling chat log budget. 320 KB is ~1.6% of the 16 MB flash and holds a
 # 20-turn conversation even when every message hits the default 4000-char
 # cap (40 messages x 4000 = 160 KB + JSON overhead). Rotation keeps the
@@ -48,9 +57,40 @@ def _fs_size(path):
         return 0
 
 
+def active_log_path():
+    """The conversation file new turns belong to.
+
+    Resolved on every call from the session store (opt/data/sessions/<id>),
+    never cached in a module global: a cached path survives a chdir/flash
+    remount and silently points at the wrong conversation. LOG_PATH stays the
+    legacy default for a board whose store cannot be read.
+    """
+    try:
+        import sessions
+        return sessions.active_path()
+    except Exception:
+        return LOG_PATH
+
+
 def initAgentFS():
     global gFsOk
-    # MicroPython mounts flash automatically; just probe writability.
+    # MicroPython mounts flash automatically; ensure the user-data home
+    # (opt/data + workspace) exists and migrate pre-split root state once.
+    try:
+        import fsutil as _fs
+        try:
+            _fs.ensure_data_tree()
+        except Exception as e:
+            print("[fs] data tree:", e)
+    except Exception:
+        pass
+    # Session store: mkdir opt/data/sessions, migrate a legacy single log,
+    # and repoint LOG_PATH at the active conversation. Best-effort.
+    try:
+        import sessions as _sess
+        _sess.ensure_store()
+    except Exception as e:
+        print("[fs] session store:", str(e)[:60])
     try:
         with open(MEM_PATH, "a"):
             pass
@@ -150,8 +190,8 @@ def _log_budgets():
         return LOG_MAX_BYTES, LOG_KEEP_BYTES
 
 
-def _rotate_chatlog(max_bytes, keep_bytes, block=16384):
-    """Trim the log to its newest keep_bytes, block by block.
+def _rotate_chatlog(max_bytes, keep_bytes, path=None, block=16384):
+    """Trim one log to its newest keep_bytes, block by block.
 
     The old rotation did `f.read()` of the whole log and then wrote a slice
     back. That is fine at 32 KB but not once the log can be hundreds of KB
@@ -160,8 +200,9 @@ def _rotate_chatlog(max_bytes, keep_bytes, block=16384):
     in, so RAM stays flat at one block.
     """
     import os
+    p = path or active_log_path()
     try:
-        sz = _fs_size(LOG_PATH)
+        sz = _fs_size(p)
     except Exception:
         return
     if sz <= max_bytes:
@@ -169,10 +210,10 @@ def _rotate_chatlog(max_bytes, keep_bytes, block=16384):
     start = sz - keep_bytes
     if start < 0:
         start = 0
-    tmp = LOG_PATH + ".tmp"
+    tmp = p + ".tmp"
     wrote = 0
     try:
-        with open(LOG_PATH, "rb") as src:
+        with open(p, "rb") as src:
             with open(tmp, "wb") as dst:
                 src.seek(start)
                 if start > 0:
@@ -196,10 +237,10 @@ def _rotate_chatlog(max_bytes, keep_bytes, block=16384):
                     wrote += len(b)
         if wrote:
             try:
-                os.remove(LOG_PATH)
+                os.remove(p)
             except OSError:
                 pass
-            os.rename(tmp, LOG_PATH)
+            os.rename(tmp, p)
         else:
             try:
                 os.remove(tmp)
@@ -212,17 +253,29 @@ def _rotate_chatlog(max_bytes, keep_bytes, block=16384):
             pass
 
 
-def appendChatLog(user, asst):
+def appendChatLog(user, asst, path=None, max_b=None, keep_b=None):
     # one open/close per turn, minimal flash wear
+    p = path or active_log_path()
     cap = _chat_entry_chars()
     try:
-        max_b, keep_b = _log_budgets()
-        if _fs_size(LOG_PATH) > max_b:
-            _rotate_chatlog(max_b, keep_b)
+        import fsutil as _fs
+        try:
+            _fs.ensure_data_tree()
+        except Exception:
+            pass
     except Exception:
         pass
     try:
-        with open(LOG_PATH, "a") as f:
+        if max_b is None or keep_b is None:
+            _mb, _kb = _log_budgets()
+            max_b = _mb if max_b is None else max_b
+            keep_b = _kb if keep_b is None else keep_b
+        if _fs_size(p) > max_b:
+            _rotate_chatlog(max_b, keep_b, p)
+    except Exception:
+        pass
+    try:
+        with open(p, "a") as f:
             f.write(json.dumps({"r": "user", "c": (user or "")[:cap]}) + "\n")
             f.write(json.dumps({"r": "assistant", "c": (asst or "")[:cap]}) + "\n")
     except OSError:
@@ -230,18 +283,34 @@ def appendChatLog(user, asst):
     return True
 
 
-def injectRecentLog(msgs, curUser, maxMsgs=8):
+def appendActivity(user, asst):
+    """Log an autonomous event (cron run, system notice) outside sessions.
+
+    Same append-only shape as a chat turn so the log stays readable, but with
+    its own smaller budget and a path no conversation reads or lists.
+    """
+    try:
+        import sessions as _sess
+        p = _sess.ACTIVITY_PATH
+    except Exception:
+        p = "opt/data/activity.jsonl"
+    return appendChatLog(user, asst, path=p,
+                         max_b=ACTIVITY_MAX_BYTES, keep_b=ACTIVITY_KEEP_BYTES)
+
+
+def injectRecentLog(msgs, curUser, maxMsgs=8, path=None):
     """Append last N persisted turns to msgs list. Returns count added.
 
-    Phase 4 note: this reads the CURRENT chatlog.jsonl only (last-8). It is
-    intentionally NOT cross-rotation recall — pre-/new history is found via
+    Reads the ACTIVE session only (last-8). It is intentionally NOT
+    cross-session recall — facts from other conversations are found via
     sessions.search() (session_search tool / GET /api/memory?q=...).
 
     Uses the shared chunked tail reader: only the last few lines are read, so
     this fallback stays cheap even when the rolling log is large."""
+    p = path or active_log_path()
     try:
         import fsutil
-        entries, _ = fsutil.read_jsonl_tail(LOG_PATH, maxMsgs)
+        entries, _ = fsutil.read_jsonl_tail(p, maxMsgs)
     except Exception:
         return 0
     added = 0
@@ -345,7 +414,7 @@ def _live_snapshot():
 
 def buildSystemPrompt():
     import config
-    parts = ["You are ESP32-Agent, an assistant running on an ESP32-S3 board at esp32-agent.local. "
+    parts = ["You are Talaria Agent, an assistant running on an ESP32-S3 board at talaria-agent.local. "
              "Reply in plain text. "]
     names = [t["name"] for i, t in enumerate(TOOL_REGISTRY) if toolEnabledIdx(i)]
     if names:
@@ -361,8 +430,27 @@ def buildSystemPrompt():
                  "calling a tool. Never reply that you lack knowledge or that "
                  "you can only look things up on the web. ")
     parts.append("Use a tool ONLY when the request needs live device state "
-                 "(pins, GPIO, ADC, wifi, memory, restart) or fresh internet "
+                 "(pins, GPIO, ADC, wifi, memory, restart), saved procedures, "
+                 "scheduled work, or fresh internet "
                  "data. Never guess pin levels or current events. ")
+    parts.append("Workspace files live under opt/data/workspace/ (shown as "
+                 "/workspace/ in Files) and can be read, searched and edited "
+                 "with the read_file, search_files, write_file and patch_file "
+                 "tools (a .bak checkpoint is kept before each write). When "
+                 "creating scripts or files, ALWAYS write under "
+                 "opt/data/workspace/ — never to the flash root or other "
+                 "locations. ")
+    parts.append("When the user asks to save a procedure as a reusable skill, "
+                 "draft the full skill text and call skills with action "
+                 "create (or propose for a /learn draft, patch/delete to revise): "
+                 "writes are quarantine-scanned and, with write-approval on, "
+                 "STAGED for human approval in Skills — tell the user to approve "
+                 "there. When the user wants something done on a schedule, use "
+                 "the cron tool (add/list/edit/pause/resume/remove/run_now, max 5 "
+                 "jobs, every 60s..86400s) and confirm the schedule back. "
+                 "Cron jobs can also run a workspace script: pass script "
+                 "(e.g. workspace/hello.py) with no_agent=true to run the script "
+                 "instead of an agent turn, delivering stdout verbatim. ")
     parts.append("Keep chat and acknowledgements short, but give a real, "
                  "complete answer when the user asks a substantive question. "
                  "Always finish with a plain-text reply summarizing tool "

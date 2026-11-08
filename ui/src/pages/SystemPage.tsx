@@ -100,7 +100,7 @@ export function SystemPage() {
   const downloadBackup = () => {
     const a = document.createElement('a')
     a.href = '/api/backup'
-    a.download = 'hermes-device-backup.json'
+    a.download = 'talaria-device-backup.json'
     a.click()
   }
 
@@ -394,7 +394,7 @@ export function SystemPage() {
         <div className="flex flex-col gap-3">
           <p className="text-[0.82rem] leading-relaxed text-text-secondary">
             This deletes <code>config.yaml</code> (WiFi + endpoint + API key + auth token),{' '}
-            <code>memory.txt</code>, <code>chatlog.jsonl</code> and the skills directory. It is
+            <code>memory.txt</code>, every saved conversation and the skills directory. It is
             <strong className="text-destructive"> not</strong> the same as Restart.
           </p>
           <Field label="Type RESET to confirm">

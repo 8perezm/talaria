@@ -36,7 +36,7 @@ except ImportError:
 
 import sessions
 
-TG_PATH = "tg.json"
+TG_PATH = "opt/data/tg.json"
 TG_API = "https://api.telegram.org"
 READ_CAP = 4096  # tg.json bound (token + small id lists)
 TG_MAX_BODY = 16384  # getUpdates/sendMessage bodies are small
@@ -159,6 +159,14 @@ def _save_state(st):
                "offset": int(st.get("offset", 0) or 0)}
     except Exception:
         doc = _blank_state()
+    try:
+        import fsutil as _fs
+        try:
+            _fs.ensure_data_tree()
+        except Exception:
+            pass
+    except Exception:
+        pass
     with open(TG_PATH, "w") as f:
         f.write(json.dumps(doc))
 
@@ -408,7 +416,20 @@ def _take_notes(key):
 
 def _default_run(key, text):
     import agent_core
-    return agent_core.runTurn("[session %s] %s" % (key, text), [])
+    try:
+        import sessions as _sess
+        _log = _sess.path_for(_sess.id_from_key(key))
+    except Exception:
+        _log = None
+    return agent_core.runTurn(text, [], log_path=_log)
+
+
+def _session_run(log_path):
+    """run_fn bound to one conversation file (Telegram: one per chat)."""
+    def _run(t):
+        import agent_core as _ac
+        return _ac.runTurn(t, [], log_path=log_path)
+    return _run
 
 
 def handleIngress(platform, chat_id, text, run_fn=None):
@@ -425,6 +446,12 @@ def handleIngress(platform, chat_id, text, run_fn=None):
         key = sessions.session_key(platform, chat_id)
     except Exception:
         key = "mini:web:default"
+    # Storage key for this chat: Telegram gets one durable session per chat,
+    # resolved every turn (no shared "active" pointer — see sessions.py).
+    try:
+        log_path = sessions.path_for(sessions.session_id_for(platform, chat_id))
+    except Exception:
+        log_path = None
     try:
         msg = str(text if text is not None else "").strip()
     except Exception:
@@ -460,11 +487,11 @@ def handleIngress(platform, chat_id, text, run_fn=None):
         full = full[:1500]  # same user-message cap the agent turn applies
         fn = run_fn
         if fn is None:
-            try:
-                import agent_core as _ac
-                fn = (lambda t: _ac.runTurn("[session %s] %s" % (key, t), []))
-            except Exception:
-                fn = _default_run_with_key(key)
+            # The session id now carries the identity, so the old
+            # "[session ...]" prompt prefix is gone: the model no longer
+            # needs a label it cannot use, and the turn reads/writes exactly
+            # the conversation file belonging to this chat.
+            fn = _session_run(log_path)
         try:
             reply = fn(full)
         except Exception as e:
@@ -480,6 +507,7 @@ def handleIngress(platform, chat_id, text, run_fn=None):
 
 
 def _default_run_with_key(key):
+    """Legacy helper kept for callers that only have a session key."""
     def _run(t):
         return _default_run(key, t)
     return _run

@@ -129,7 +129,7 @@ def test_config_yaml_redaction_and_save(tmp_path, monkeypatch):
         assert "wifipass" in r.json["yaml"]
         # Save a full document: comments survive when normalization is a no-op.
         text = r.json["yaml"].replace(
-            "# Hermes Agent (micro) - configuration", "# hand note")
+            "# Talaria Agent (micro) - configuration", "# hand note")
         r = _request("post", "/api/config/yaml", {"yaml": text})
         assert r.status_code == 200, r.json
         assert r.json["ok"] is True
@@ -176,7 +176,9 @@ def test_config_yaml_invalid_is_400(tmp_path, monkeypatch):
 def test_files_save_config_yaml_reloads(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     try:
-        r = _request("post", "/api/files/save", {
+        # config.yaml lives at flash `/` outside the locked Files home —
+        # the system hatch owns it; the Config page remains primary.
+        r = _request("post", "/api/system/files/save", {
             "path": "config.yaml",
             "content": "agent:\n  model: hand-edited\n"
                        "  endpoint: https://api.test/v1\n",
@@ -184,10 +186,15 @@ def test_files_save_config_yaml_reloads(tmp_path, monkeypatch):
         assert r.status_code == 200, r.json
         assert r.json.get("reloaded") is True
         assert config.cfgModel == "hand-edited"
-        r = _request("post", "/api/files/save", {
+        r = _request("post", "/api/system/files/save", {
             "path": "config.yaml", "content": "agent: [broken\n"})
         assert r.status_code == 400
         assert "invalid config.yaml" in r.json["error"]
+        # The locked Files endpoint must refuse config.yaml outright.
+        r = _request("post", "/api/files/save", {
+            "path": "config.yaml", "content": "agent:\n  model: x\n",
+        })
+        assert r.status_code == 400
     finally:
         server._app = None
 

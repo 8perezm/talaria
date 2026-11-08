@@ -82,7 +82,8 @@ def _seed_secrets():
     }
     with open("config.json", "w") as f:
         f.write(json.dumps(cfg))
-    with open("tg.json", "w") as f:
+    os.makedirs(os.path.join("opt", "data"), exist_ok=True)
+    with open("opt/data/tg.json", "w") as f:
         f.write(
             json.dumps(
                 {"bot_token": SECRETS["bot"], "allow": [111], "requests": [222], "offset": 9}
@@ -96,9 +97,10 @@ def _seed_secrets():
 def test_reset_is_factory_wipe(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     try:
+        os.makedirs(os.path.join("opt", "data"), exist_ok=True)
         for name, body in (
-            ("chatlog.jsonl", '{"r":"user","c":"hi"}\n'),
-            ("memory.txt", "- test fact\n"),
+            ("opt/data/chatlog.jsonl", '{"r":"user","c":"hi"}\n'),
+            ("opt/data/memory.txt", "- test fact\n"),
             ("config.json", '{"api_model": "m"}'),
         ):
             with open(name, "w") as f:
@@ -106,7 +108,7 @@ def test_reset_is_factory_wipe(tmp_path, monkeypatch):
         r = _request("post", "/api/reset", {})
         assert r.status_code == 200, r.status_code
         assert r.json.get("ok") is True and r.json.get("rebooting") is True
-        for path in ("chatlog.jsonl", "memory.txt", "config.json"):
+        for path in ("opt/data/chatlog.jsonl", "opt/data/memory.txt", "config.json"):
             assert not os.path.exists(path), path + " survived /api/reset"
     finally:
         server._app = None
@@ -115,21 +117,22 @@ def test_reset_is_factory_wipe(tmp_path, monkeypatch):
 def test_reboot_preserves_state(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     try:
+        os.makedirs(os.path.join("opt", "data"), exist_ok=True)
         for name, body in (
-            ("chatlog.jsonl", '{"r":"user","c":"hi"}\n'),
-            ("memory.txt", "- test fact\n"),
+            ("opt/data/chatlog.jsonl", '{"r":"user","c":"hi"}\n'),
+            ("opt/data/memory.txt", "- test fact\n"),
             ("config.json", '{"api_model": "m"}'),
-            ("cron.json", '{"jobs": []}'),
-            ("tg.json", '{"bot_token": "", "allow": [], "requests": [], "offset": 0}'),
+            ("opt/data/cron.json", '{"jobs": []}'),
+            ("opt/data/tg.json", '{"bot_token": "", "allow": [], "requests": [], "offset": 0}'),
         ):
             with open(name, "w") as f:
                 f.write(body)
         r = _request("post", "/api/reboot", {})
         assert r.status_code == 200, r.status_code
         assert r.json.get("ok") is True and r.json.get("rebooting") is True
-        for path in ("chatlog.jsonl", "memory.txt", "config.json", "cron.json", "tg.json"):
+        for path in ("opt/data/chatlog.jsonl", "opt/data/memory.txt", "config.json", "opt/data/cron.json", "opt/data/tg.json"):
             assert os.path.exists(path), path + " wiped by /api/reboot"
-        with open("memory.txt") as f:
+        with open("opt/data/memory.txt") as f:
             assert f.read() == "- test fact\n"
     finally:
         server._app = None
@@ -154,13 +157,14 @@ def test_backup_redaction_matrix(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     try:
         _seed_secrets()
-        with open("memory.txt", "w") as f:
+        os.makedirs(os.path.join("opt", "data"), exist_ok=True)
+        with open("opt/data/memory.txt", "w") as f:
             f.write("- lobby plant watered\n")
-        with open("user.txt", "w") as f:
+        with open("opt/data/user.txt", "w") as f:
             f.write("- likes concise replies\n")
-        with open("chatlog.jsonl", "w") as f:
+        with open("opt/data/chatlog.jsonl", "w") as f:
             f.write('{"r": "user", "c": "hello"}\n')
-        with open("cron.json", "w") as f:
+        with open("opt/data/cron.json", "w") as f:
             f.write('{"jobs": []}')
         import skillstore
 

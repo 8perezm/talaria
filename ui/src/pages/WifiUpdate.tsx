@@ -66,11 +66,6 @@ export function WifiPage() {
         title="WiFi"
         icon={<Wifi className="h-4 w-4" />}
         subtitle={<StatusChip />}
-        actions={
-          <Button size="sm" variant="ghost" loading={scanning} onClick={() => void scan()}>
-            <RefreshCw className="h-3 w-3" /> Scan
-          </Button>
-        }
       />
       <PageBody>
         <div className="flex max-w-3xl flex-col gap-3">
@@ -83,7 +78,15 @@ export function WifiPage() {
             ]}
           />
 
-          <Panel title="Nearby networks" icon={<Wifi className="h-3.5 w-3.5" />}>
+          <Panel
+            title="Nearby networks"
+            icon={<Wifi className="h-3.5 w-3.5" />}
+            actions={
+              <Button size="sm" variant="ghost" loading={scanning} onClick={() => void scan()}>
+                <RefreshCw className="h-3 w-3" /> Scan
+              </Button>
+            }
+          >
             {networks.length === 0 ? (
               <div className="px-3.5 py-4 text-center text-[0.8rem] text-text-faint">
                 Press <span className="text-text-secondary">Scan</span> to list visible access points.

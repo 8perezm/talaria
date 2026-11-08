@@ -17,7 +17,7 @@ interface AppData {
   authed: boolean
   refreshStatus: () => Promise<void>
   refreshConfig: () => Promise<void>
-  unlock: (token: string) => Promise<boolean>
+  unlock: (username: string, token: string) => Promise<boolean>
   lock: () => void
   online: boolean
 }
@@ -94,8 +94,25 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   }, [refreshStatus, refreshConfig])
 
   const unlock = useCallback(
-    async (token: string) => {
-      setToken(token.trim())
+    async (username: string, token: string) => {
+      const user = username.trim()
+      const pass = token.trim()
+      // Fixed dashboard identity for now; the password is the device auth
+      // token. Scoped API keys later slot in here (username/key pair) and
+      // on the device next to the Bearer check — this shape already fits.
+      if (user.toLowerCase() !== 'admin' || !pass) return false
+      // Prefer the stateless backend verifier (new firmware); fall back to
+      // the Bearer status probe so a new UI still unlocks old firmware.
+      try {
+        await api.post('/api/login', { username: user, password: pass })
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) {
+          /* old firmware without /api/login — fall through */
+        } else {
+          return false
+        }
+      }
+      setToken(pass)
       try {
         const next = await api.get<Status>('/api/status')
         setStatus(next)
@@ -135,7 +152,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   // Debug hook: lets a support session inspect live provider state from the
   // devtools console without a REPL on the device.
   if (typeof window !== 'undefined') {
-    ;(window as unknown as Record<string, unknown>).__hermes = value
+    ;(window as unknown as Record<string, unknown>).__talaria = value
   }
 
   return <AppDataContext.Provider value={value}>{children}</AppDataContext.Provider>

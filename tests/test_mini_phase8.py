@@ -33,7 +33,7 @@ def _setup(tmp_path, monkeypatch):
     monkeypatch.setattr(net, "is_connected", lambda: True)
     server._app = None
     gateway._reset_guards()
-    for f in ("tg.json",):
+    for f in ("opt/data/tg.json",):
         try:
             os.remove(f)
         except OSError:
@@ -61,7 +61,8 @@ def _request(method, path, payload=None, raw=None, ctype=None):
 
 
 def _write_tg(doc):
-    with open("tg.json", "w") as f:
+    os.makedirs("opt/data", exist_ok=True)
+    with open("opt/data/tg.json", "w") as f:
         f.write(json.dumps(doc))
 
 
@@ -85,13 +86,15 @@ def test_web_always_allowed(tmp_path, monkeypatch):
     assert r == "web-ok"
 
 
-def test_default_run_uses_empty_history_and_session_note(tmp_path, monkeypatch):
+def test_default_run_uses_empty_history_and_session_path(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     import agent_core
+    import sessions
     seen = []
 
-    def _fake_run(user_msg, history=None, out=None, max_iters=None):
-        seen.append((user_msg, history))
+    def _fake_run(user_msg, history=None, out=None, max_iters=None,
+                  log_path=None):
+        seen.append((user_msg, history, log_path))
         return "turn-ok"
 
     monkeypatch.setattr(agent_core, "runTurn", _fake_run)
@@ -99,7 +102,11 @@ def test_default_run_uses_empty_history_and_session_note(tmp_path, monkeypatch):
     r = gateway.handleIngress("telegram", 9, "hello", run_fn=None)
     assert r == "turn-ok" and len(seen) == 1
     assert seen[0][1] == []  # empty history
-    assert "mini:telegram:9" in seen[0][0] and "hello" in seen[0][0]
+    # The turn is bound to this chat's session file, not a prompt label.
+    assert seen[0][0] == "hello"
+    want = sessions.path_for(sessions.session_id_for("telegram", 9))
+    assert seen[0][2] == want
+    assert want.endswith("mini_telegram_9.jsonl")
 
 
 # ---- allowlist / pairing ----
@@ -284,7 +291,7 @@ def test_no_token_dormant_no_writes_no_calls(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway, "_tg_http", _spy)
     r = gateway.tg_loop()
     assert r == {"success": True, "dormant": True, "processed": 0}
-    assert called == [] and not os.path.exists("tg.json")
+    assert called == [] and not os.path.exists("opt/data/tg.json")
 
 
 def test_loop_processes_and_persists_offset_only_on_advance(tmp_path, monkeypatch):
@@ -317,10 +324,10 @@ def test_loop_idle_no_rewrite(tmp_path, monkeypatch):
     _write_tg({"bot_token": "TOK", "allow": [7], "requests": [], "offset": 50})
     monkeypatch.setattr(gateway, "_tg_http",
                         lambda *a, **k: (True, '{"ok":true,"result":[]}', 200))
-    before = open("tg.json", "rb").read()
+    before = open("opt/data/tg.json", "rb").read()
     r = gateway.tg_loop()
     assert r["success"] is True and r["processed"] == 0
-    assert open("tg.json", "rb").read() == before  # offset same: no write
+    assert open("opt/data/tg.json", "rb").read() == before  # offset same: no write
 
 
 def test_loop_poll_failure_never_kills(tmp_path, monkeypatch):
@@ -469,14 +476,14 @@ def test_update_blocklist_has_tg(tmp_path, monkeypatch):
                    ctype="multipart/form-data; boundary=B")
     assert res.status_code == 400
     assert "no acceptable files" in res.json["error"]
-    assert not os.path.exists(os.path.join(str(tmp_path), "tg.json"))
+    assert not os.path.exists(os.path.join(str(tmp_path), "opt/data/tg.json"))
 
 
 def test_doctor_lists_tg_presence_only(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    assert "tg.json" in server._DOCTOR_FILES
+    assert "opt/data/tg.json" in server._DOCTOR_FILES
     d = server._collect_doctor()
-    assert "tg.json" in d["files"]  # size/-1 only, never content
+    assert "opt/data/tg.json" in d["files"]  # size/-1 only, never content
 
 
 def test_main_tg_poller_wiring():

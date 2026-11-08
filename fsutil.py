@@ -83,6 +83,21 @@ SEARCH_SNIPPET_MAX = 160
 SEARCH_PATTERN_MAX = 120
 SEARCH_LINE_MAX = 1024  # longer lines are truncated before matching
 
+# Managed user-data home (Hermes parity: the dashboard's Files root).
+# System code stays at flash `/`; everything the user owns lives under here.
+# Files (`/api/files`) is locked to this subtree; system edits go through
+# the separate `/api/system/files/*` repair hatch.
+DATA_ROOT = "opt/data"
+DATA_WORKSPACE = "opt/data/workspace"
+
+# Legacy flat locations (pre-split boards kept these at flash root).
+# ensure_data_tree() renames each one into DATA_ROOT once, when the new
+# path is still missing. New code must use the DATA_* paths only.
+_LEGACY_DATA_FILES = ("memory.txt", "user.txt", "chatlog.jsonl",
+                       "chatlog.prev.jsonl", "cron.json", "tg.json",
+                       "bundles.json", "pending_mem.json")
+_LEGACY_DATA_DIRS = ("skills", "pending_skills")
+
 # Secrets / partial writes: never handed to the model.
 _READ_REFUSED_NAMES = ("config.yaml", "config.json", "config.json.bak", "tg.json")
 
@@ -91,8 +106,9 @@ _READ_REFUSED_NAMES = ("config.yaml", "config.json", "config.json.bak", "tg.json
 _WRITE_REFUSED_NAMES = ("config.yaml", "config.json", "config.json.bak",
                         "memory.txt", "user.txt",
                         "chatlog.jsonl", "chatlog.prev.jsonl", "cron.json",
-                        "tg.json", "bundles.json", "pending_mem.json")
-_WRITE_REFUSED_DIRS = ("skills", "pending_skills")
+                        "tg.json", "bundles.json", "pending_mem.json",
+                        "active.json", "activity.jsonl", "activity.prev.jsonl")
+_WRITE_REFUSED_DIRS = ("skills", "pending_skills", DATA_ROOT + "/sessions")
 
 
 def _base(norm):
@@ -138,6 +154,106 @@ def parent(n):
     if not n or "/" not in n:
         return ""
     return n.rsplit("/", 1)[0]
+
+
+def under_data(n):
+    """True when norm n is the data home itself or inside it."""
+    try:
+        return n == DATA_ROOT or (n.startswith(DATA_ROOT + "/") if n else False)
+    except Exception:
+        return False
+
+
+def to_data(n):
+    """Map a Files-API norm into the data home.
+
+    '' (root listing) -> DATA_ROOT; an already-data path passes through;
+    anything else is treated as relative to the data home, so system
+    paths can never be addressed through the locked endpoint.
+    Returns None for invalid input.
+    """
+    if n is None:
+        return None
+    try:
+        if not n:
+            return DATA_ROOT
+        if under_data(n):
+            return n
+        return DATA_ROOT + "/" + n
+    except Exception:
+        return None
+
+
+def ensure_data_tree(root=None):
+    """mkdir -p opt/data + opt/data/workspace; one-time legacy migration.
+
+    Moves pre-split root files/dirs (memory.txt, skills/, ...) into DATA_ROOT
+    when the new path is still missing. Best-effort, never raises: a
+    half-migrated board keeps working on the next boot. Creates both the
+    relative chain (CWD-relative: device `/`, host tests chdir tmp) and the
+    _FS_ROOT-absolute chain (host tests that override _FS_ROOT without
+    chdir), so direct `open("opt/data/...")` writers work everywhere.
+    Returns '' (err text unused — kept for symmetry with ensure_parent).
+    """
+    import os
+    base = (root if root is not None else _FS_ROOT) or ""
+    for d in ("opt", DATA_ROOT, DATA_WORKSPACE, DATA_ROOT + "/sessions"):
+        # relative (CWD): device + chdir-style tests
+        try:
+            os.mkdir(d)
+        except Exception:
+            pass
+        # absolute via _FS_ROOT: tests that only override _FS_ROOT
+        try:
+            fp = full(d, root)
+            if fp != d and fp != "/" + d:
+                try:
+                    os.mkdir(fp)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # os.makedirs fallback for deeply-missing parents (host only;
+        # MicroPython has no makedirs — the per-segment loop above covers it).
+        try:
+            _mk = getattr(os, "makedirs", None)
+            if _mk is not None:
+                try:
+                    _mk(d, exist_ok=True)
+                except Exception:
+                    pass
+                if base:
+                    try:
+                        _mk(full(d, root), exist_ok=True)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    for name in _LEGACY_DATA_FILES:
+        for src, dst in ((name, DATA_ROOT + "/" + name),
+                         (full(name, root), full(DATA_ROOT + "/" + name, root))):
+            try:
+                if is_dir(src) is False and is_dir(dst) is None:
+                    try:
+                        os.rename(src, dst)
+                        break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    for name in _LEGACY_DATA_DIRS:
+        for src, dst in ((name, DATA_ROOT + "/" + name),
+                         (full(name, root), full(DATA_ROOT + "/" + name, root))):
+            try:
+                if is_dir(src) is True and is_dir(dst) is None:
+                    try:
+                        os.rename(src, dst)
+                        break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    return ""
 
 
 def is_dir(fp):
@@ -632,17 +748,30 @@ def write_refusal(n):
     if not n:
         return "no filename"
     b = _base(n)
+    # One conversation per file, owned by the session store (append-only).
     try:
-        top = n.split("/", 1)[0]
+        if n == DATA_ROOT + "/sessions" or n.startswith(DATA_ROOT + "/sessions/"):
+            return ("refused: conversations are managed - use the Sessions "
+                    "page (/api/sessions), never direct file writes")
     except Exception:
-        top = n
-    if top in _WRITE_REFUSED_DIRS:
-        if top == "skills":
-            return ("refused: skills/ is managed - read with skill_view and "
-                    "change skills via the /api/skills propose/approve flow, "
-                    "never by direct file writes")
-        return ("refused: pending_skills/ holds staged approvals - review via "
-                "/api/skills?pending=1, never by direct file writes")
+        pass
+    # Managed skill dirs, at the legacy root or under the data home.
+    # The workspace (opt/data/workspace/...) stays writable — only the two
+    # managed stores are refused.
+    _managed_prefixes = ("skills", "pending_skills",
+                         DATA_ROOT + "/skills",
+                         DATA_ROOT + "/pending_skills")
+    for _mp in _managed_prefixes:
+        try:
+            if n == _mp or n.startswith(_mp + "/"):
+                if _mp.endswith("skills") and not _mp.endswith("pending_skills"):
+                    return ("refused: skills/ is managed - read with skill_view and "
+                            "change skills via the /api/skills propose/approve flow, "
+                            "never by direct file writes")
+                return ("refused: pending_skills/ holds staged approvals - review via "
+                        "/api/skills?pending=1, never by direct file writes")
+        except Exception:
+            pass
     if b in _WRITE_REFUSED_NAMES or b.startswith("pending_"):
         if b in ("config.yaml", "config.json", "config.json.bak"):
             return ("refused: %s holds secrets - manage it via the Config "
@@ -653,6 +782,12 @@ def write_refusal(n):
             return ("refused: chat logs are append-only - read via "
                     "session_search, rotate via POST /api/memory "
                     "{clear_log:true}")
+        if b in ("activity.jsonl", "activity.prev.jsonl"):
+            return ("refused: the activity log is append-only - read via "
+                    "/api/journey")
+        if b == "active.json":
+            return ("refused: active.json is the session pointer - use "
+                    "/api/sessions/activate")
         if b == "cron.json":
             return ("refused: cron.json is managed - use the cron tool or "
                     "/api/cron")

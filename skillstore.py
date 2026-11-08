@@ -1,7 +1,7 @@
 # skillstore.py — single-file user skills (Mini Hermes Phase 3).
 # MicroPython-safe: utf-8 only, plain substring ops (no `re`), bounded reads,
 # lazy `os` imports. This module OWNS the skills store; the tools
-# (skills_list / skill_view) and server.py /api/skills are thin shims over it.
+# (skills / skill_view) and server.py /api/skills are thin shims over it.
 #
 # Store: `skills/<name>.md`, name = lowercase alnum+hyphen, <=40 chars.
 # Each skill <=3KB, max 12 skills. First line `// desc: <<=120 chars>`,
@@ -27,9 +27,9 @@ try:
 except ImportError:
     import json
 
-SKILLS_DIR = "skills"
-PENDING_DIR = "pending_skills"
-BUNDLES_PATH = "bundles.json"
+SKILLS_DIR = "opt/data/skills"
+PENDING_DIR = "opt/data/pending_skills"
+BUNDLES_PATH = "opt/data/bundles.json"
 SKILL_MAX_BYTES = 3072  # 3KB per skill
 SKILL_MAX_COUNT = 12
 NAME_MAX = 40
@@ -232,9 +232,47 @@ def scan(text):
 # ---------- store ----------
 
 def _ensure_dir(path):
-    import os
     try:
-        os.mkdir(path)
+        import fsutil as _fs
+        try:
+            _fs.ensure_data_tree()
+        except Exception:
+            pass
+    except Exception:
+        pass
+    import os
+    for cand in (str(path),):
+        cur = ""
+        for seg in cand.replace("\\", "/").split("/"):
+            if not seg or seg == ".":
+                continue
+            cur = seg if not cur else cur + "/" + seg
+            try:
+                os.mkdir(cur)
+            except Exception:
+                pass
+    try:
+        import fsutil as _fs2
+        try:
+            fp = _fs2.full(str(path))
+            if fp != str(path):
+                cur = ""
+                # absolute mkdir chain without os.makedirs (MicroPython-safe)
+                stripped = fp.replace("\\", "/")
+                prefix = ""
+                if stripped.startswith("/"):
+                    prefix = "/"
+                    stripped = stripped[1:]
+                for seg in stripped.split("/"):
+                    if not seg:
+                        continue
+                    cur = (prefix + seg) if not cur or cur == "/" else cur + "/" + seg
+                    try:
+                        os.mkdir(cur)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -374,7 +412,7 @@ def view(name):
     t = _read_file(_path_for(s), SKILL_MAX_BYTES + 1)
     if t is None:
         return {"success": False,
-                "error": "unknown skill '%s'. List names with skills_list." % s[:40]}
+                "error": "unknown skill '%s'. List names with skills." % s[:40]}
     if len(t) > SKILL_MAX_BYTES:
         t = t[:SKILL_MAX_BYTES]
     desc, _ = parse_desc(t)

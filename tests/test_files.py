@@ -76,3 +76,44 @@ def test_fs_list_missing(tmp_path, monkeypatch):
     entries, err = server._fs_list_dir("nope")
     assert entries is None
     assert err == "not found"
+
+
+def test_files_data_norm_locks_to_data_home():
+    assert server._files_data_norm(None) is None
+    assert server._files_data_norm("") == "opt/data"
+    assert server._files_data_norm("opt/data") == "opt/data"
+    assert server._files_data_norm("opt/data/memory.txt") == "opt/data/memory.txt"
+    # bare names and system paths both land inside the data home
+    assert server._files_data_norm("note.txt") == "opt/data/note.txt"
+    assert server._files_data_norm("server.py") == "opt/data/server.py"
+    assert server._files_data_parent("opt/data") is None
+    assert server._files_data_parent("opt/data/memory.txt") == "/opt/data"
+
+
+def test_ensure_data_tree_migrates_legacy(tmp_path, monkeypatch):
+    import fsutil
+    monkeypatch.setattr(fsutil, "_FS_ROOT", str(tmp_path))
+    monkeypatch.setattr(server, "_FS_ROOT", str(tmp_path))
+    with open(str(tmp_path / "memory.txt"), "w") as f:
+        f.write("- hi\n")
+    os.mkdir(str(tmp_path / "skills"))
+    with open(str(tmp_path / "skills" / "a.md"), "w") as f:
+        f.write("# a\n")
+    assert fsutil.ensure_data_tree(str(tmp_path)) == ""
+    assert os.path.exists(str(tmp_path / "opt" / "data" / "memory.txt"))
+    assert os.path.exists(str(tmp_path / "opt" / "data" / "skills" / "a.md"))
+    assert os.path.exists(str(tmp_path / "opt" / "data" / "workspace"))
+    assert not os.path.exists(str(tmp_path / "memory.txt"))
+    # second run is a no-op and never raises
+    assert fsutil.ensure_data_tree(str(tmp_path)) == ""
+
+
+def test_write_refusal_covers_data_home_skills():
+    import fsutil
+    assert "skills" in fsutil.write_refusal("skills/x.md")
+    assert "skills" in fsutil.write_refusal("opt/data/skills/x.md")
+    assert "pending_skills" in fsutil.write_refusal("opt/data/pending_skills/p.json")
+    # workspace files stay writable
+    assert fsutil.write_refusal("opt/data/workspace/note.txt") == ""
+    # managed basenames stay refused anywhere under the data home
+    assert "memory" in fsutil.write_refusal("opt/data/memory.txt")

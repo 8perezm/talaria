@@ -1,4 +1,4 @@
-# ESP32 Agent — MicroPython port
+# Talaria Agent — MicroPython port
 
 A chat harness on your ESP32, built in **MicroPython + Microdot** instead of C++/Arduino.
 Same functionality as [`esuyo-esp32-agent`](../esuyo-esp32-agent): ears, hands, memory,
@@ -32,13 +32,13 @@ straight off the microcontroller.
 | **Config / Keys** | endpoint, model, API key, WiFi, auth token |
 | **System** | diagnostics, checkpoints, backup, reboot, factory reset |
 
-Design system: Hermes "LENS_0" teal — canvas `#041c1c`, cream midground `#ffe6cb`,
+Design system: LENS_0 teal — canvas `#041c1c`, cream midground `#ffe6cb`,
 square corners, hairline rules, uppercase micro-labels. No webfonts, no CDN: the
 device has no internet beyond your model endpoint, so everything ships in the bundle.
 
 ## Features (parity with C++)
 
-- **Phone-friendly setup:** first boot creates open `ESP32-Agent-Setup` AP with
+- **Phone-friendly setup:** first boot creates open `Talaria-Agent-Setup` AP with
   wildcard DNS captive portal. Pick home WiFi + paste AI endpoint in the browser.
 - **Same 10 tools:** `get_status`, `gpio_write`, `gpio_read`, `adc_read`,
   `wifi_scan`, `mem_save`, `mem_read`, `restart_device`, `blink`, `web_fetch`,
@@ -48,12 +48,15 @@ device has no internet beyond your model endpoint, so everything ships in the bu
   `/api/models`, `/api/config`, `/api/chat`, `/api/chat-stream` (SSE),
   `/api/debug-raw`, `/api/tools`, `/api/memory`, `/api/reset`, `POST /update`.
 - **Same auth:** optional device token (`Bearer` / `X-Auth-Token`), AP setup stays open.
-- **Same memory:** `/memory.txt` (4KB) + `/chatlog.jsonl` (32KB) on flash, one write
-  per turn, last-8-turns context injection, system prompt lists only enabled tools.
+- **Same memory:** `/opt/data/memory.txt` (4KB) + one file per conversation
+  under `/opt/data/sessions/` on flash, one write per turn, last-8-turns
+  context injection, system prompt lists only enabled tools.
 - **Conversation survives a refresh:** every completed turn — streamed or tool-driven —
-  is appended to `/chatlog.jsonl`. The chat view rebuilds the transcript from
-  `/api/memory?tail=20` on load, and the device injects the persisted turns into the
-  next request whenever the browser sends no history.
+  is appended to its session file. The chat view rebuilds the transcript from
+  `/api/memory?session=<id>` on load, and the device injects the persisted turns
+  into the next request whenever the browser sends no history. **New Chat**
+  starts another session file; nothing is overwritten. Cron output goes to
+  `/opt/data/activity.jsonl`, so scheduled jobs never appear as conversations.
 
 ## What changed (MicroPython realities)
 
@@ -63,7 +66,7 @@ device has no internet beyond your model endpoint, so everything ships in the bu
 | Arduino `WebServer` + `DNSServer` | Microdot (asyncio) + ~40-line UDP wildcard DNS in `net.py` |
 | `PROGMEM` HTML in `web_ui.h` | React SPA compiled into `www/` (index.html + assets) |
 | `Update.h` firmware.bin OTA + ArduinoOTA | `POST /update` saves code/page files then reboots; **MicroPython firmware itself is flashed once over USB** |
-| mDNS `esp32-agent.local` | best-effort only (core MicroPython has no mDNS) — use the IP from serial |
+| mDNS `talaria-agent.local` | best-effort only (core MicroPython has no mDNS) — use the IP from serial |
 | `HTTPClient` + `WiFiClientSecure` (insecure) | raw `socket` + `ssl` (MicroPython has no cert store; TLS verification none, same as C++). HTTP/1.0 for buffered requests, HTTP/1.1 + chunked decode for SSE; 15–45 s timeouts |
 | `/api/chat-stream` true socket streaming | true streaming too: `stream:true` over HTTP/1.1 raw socket with incremental `Transfer-Encoding: chunked` decode; same `{"delta"}` / `{"reasoning"}` / `{"need_tools":true}` / `[DONE]` contract |
 | `/api/scan` non-blocking async + 202 | blocking scan (~2s) + 30s cache; always `200` |
@@ -97,11 +100,11 @@ powershell -File deploy.ps1 -Port COM11
 # 4) Watch boot logs, note the IP:
 python -m mpremote connect COM11 reset
 python -m mpremote connect COM11 repl
-# expect: === Agent boot ===, WiFi OK: 192.168.x.x  OR  AP started: ESP32-Agent-Setup
+# expect: === Agent boot ===, WiFi OK: 192.168.x.x  OR  AP started: Talaria-Agent-Setup
 ```
 
 Then open `http://<IP>/`. First run: **Setup** walks you through WiFi and the model
-provider; or join `ESP32-Agent-Setup` and the captive portal lands you on `/wifi`.
+provider; or join `Talaria-Agent-Setup` and the captive portal lands you on `/wifi`.
 
 ## Project structure
 
@@ -178,7 +181,7 @@ security:
   skills_write_approval: true
 ```
 
-- Join AP `ESP32-Agent-Setup` → `http://192.168.4.1/wifi` → Scan → Save & Reboot.
+- Join AP `Talaria-Agent-Setup` → `http://192.168.4.1/wifi` → Scan → Save & Reboot.
 - Rejoin home WiFi → `http://<IP>/config` → endpoint base (`/chat/completions` is
   appended), API key, model → Save (no reboot).
 - Optional device token on `/keys` (min 8 chars). Same `Bearer` header scheme
@@ -211,10 +214,14 @@ fetch https://example.com and summarize it in one line
   append to `tools/registry.py` (END only — index = bit in `tools_mask`).
 - Debug: REPL logs (`[agent]`, `[tool]`, `[chat]`), `GET /api/status`,
   `GET /api/debug-raw?message=...` (raw upstream body, key never leaks).
-- In the browser, `window.__hermes` exposes live dashboard state and
-  `window.__hermesNet` the last 40 API calls with timings — the fastest way to
+- In the browser, `window.__talaria` exposes live dashboard state and
+  `window.__talariaNet` the last 40 API calls with timings — the fastest way to
   diagnose a stalled request on a device with no console.
 
 ## License
 
 MIT — Copyright (c) 2026 Miguel Perez. See [LICENSE](./LICENSE).
+
+## Acknowledgements
+
+Dashboard design and interaction inspired by [Hermes Agent by Nous Research](https://github.com/NousResearch/hermes-agent) (MIT licensed).

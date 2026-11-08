@@ -1,9 +1,9 @@
 {
-  "name": "esuyo-esp32-agent-ui",
+  "name": "talaria-agent-ui",
   "private": true,
   "version": "2.0.0",
   "type": "module",
-  "description": "Hermes-style React dashboard for the ESP32 micro agent. Built to ../www and served by Microdot.",
+  "description": "Talaria Agent React dashboard for the ESP32 micro agent. Built to ../www and served by Microdot.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b --noEmit && vite build && node scripts/postbuild.mjs ../www",

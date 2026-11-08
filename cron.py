@@ -3,9 +3,10 @@
 # lazy imports (`os`/`time`/`socket`/`gc` inside functions), single file
 # rewrite per change (flash wear: tick writes ONLY when >=1 job reschedules).
 #
-# Store: cron.json {"jobs": [{id, prompt, every_s, next_run, enabled,
-#   deliver, webhook_url, skills[], created}]}.
+# Store: cron.json {"jobs": [{id, name, prompt, every_s, next_run, enabled,
+#   deliver, webhook_url, skills[], script, no_agent, created}]}.
 #   - id: "j1".. lowest-free (deterministic, collision-free, reuses freed ids).
+#   - name: optional display label (<=60 chars, Hermes parity); "" = none.
 #   - every_s: clamped 60..86400 (1min..1day).
 #   - deliver: "log" | "webhook" | "telegram". Webhook URL lives in
 #     webhook_url. "telegram" is ACCEPTED and stored but delivery reports
@@ -13,6 +14,14 @@
 #     lands (never crashes — the job still runs and logs).
 #   - skills[]: attached skill names, expanded via skillstore.view() into a
 #     context prefix at run time (missing skills skipped, reported).
+#   - script: optional workspace .py file ("opt/data/workspace/..." norm,
+#     shown as /workspace/... in Files). In agent mode its captured stdout
+#     is prepended to the prompt; with no_agent=true the script runs INSTEAD
+#     of the agent turn and stdout is delivered verbatim (Hermes parity:
+#     "no_agent: run the script only and deliver stdout verbatim").
+#     Must live under opt/data/workspace/ — anything else is refused at
+#     add/edit time. Missing/oversize/failing scripts fail the run cleanly
+#     (never raise).
 #
 # Clock: `now` = time.time(). On device the epoch is 2000-01-01 (no RTC
 # battery; net.syncTime() NTP-syncs after boot), on host it is 1970 — the
@@ -29,14 +38,17 @@ try:
 except ImportError:
     import json
 
-CRON_PATH = "cron.json"
+CRON_PATH = "opt/data/cron.json"
 MAX_JOBS = 5
 EVERY_MIN = 60
 EVERY_MAX = 86400
 PROMPT_MAX = 1500  # same user-message cap the agent turn applies
+NAME_MAX = 60  # optional job display label (Hermes "Name (optional)")
 SKILLS_MAX = 8  # attached skills per job (each <=3KB in skillstore)
 PREFIX_MAX = 1000  # skills context prefix cap (prompt keeps the rest)
 READ_CAP = 12288  # cron.json bound (5 jobs x ~1.5KB prompt + envelope)
+SCRIPT_MAX = 8192  # cron script source cap (bounds exec RAM on device)
+SCRIPT_OUT_MAX = 1000  # captured print() output cap per script run
 
 _POST_HANDSHAKE_TIMEOUT = 5
 _POST_TIMEOUT = 10
@@ -72,6 +84,10 @@ def _norm_job(j):
         d["id"] = str(d.get("id", ""))[:16]
     except Exception:
         d["id"] = ""
+    try:
+        d["name"] = str(d.get("name", "") or "").strip()[:NAME_MAX]
+    except Exception:
+        d["name"] = ""
     try:
         d["prompt"] = str(d.get("prompt", "") or "")
     except Exception:
@@ -113,16 +129,25 @@ def _norm_job(j):
         if nm:
             clean.append(nm[:40])
     d["skills"] = clean
+    try:
+        d["script"] = _norm_script(d.get("script", "")) or ""
+    except Exception:
+        d["script"] = ""
+    try:
+        d["no_agent"] = bool(d.get("no_agent", False))
+    except Exception:
+        d["no_agent"] = False
     return d
 
 
 def public(job):
     """Stored job as a plain dict copy (safe to hand to callers)."""
     j = _norm_job(job)
-    return {"id": j["id"], "prompt": j["prompt"], "every_s": j["every_s"],
+    return {"id": j["id"], "name": j["name"], "prompt": j["prompt"], "every_s": j["every_s"],
             "next_run": j["next_run"], "enabled": j["enabled"],
             "deliver": j["deliver"], "webhook_url": j["webhook_url"],
-            "skills": j["skills"], "created": j["created"]}
+            "skills": j["skills"], "script": j["script"],
+            "no_agent": j["no_agent"], "created": j["created"]}
 
 
 def _load():
@@ -153,6 +178,14 @@ def _save(state):
         jobs = state.get("jobs", [])
     except Exception:
         jobs = []
+    try:
+        import fsutil as _fs
+        try:
+            _fs.ensure_data_tree()
+        except Exception:
+            pass
+    except Exception:
+        pass
     with open(CRON_PATH, "w") as f:
         f.write(json.dumps({"jobs": jobs}))
 
@@ -238,6 +271,105 @@ def _norm_skills_arg(sk):
     return clean, ""
 
 
+def _norm_script(p):
+    """Workspace script path -> 'opt/data/workspace/...' norm.
+
+    Accepts 'hello.py' (bare = workspace root), 'workspace/x.py',
+    '/workspace/x.py', 'opt/data/workspace/x.py' and the /-prefixed form.
+    Returns '' when empty, None when invalid or outside the workspace.
+    Never raises."""
+    try:
+        if p is None:
+            return ""
+        s = str(p).strip()
+    except Exception:
+        return None
+    if not s:
+        return ""
+    try:
+        import fsutil as _fs
+        n = _fs.norm(s)
+        ws = _fs.DATA_WORKSPACE
+    except Exception:
+        return None
+    if n is None or not n:
+        return None
+    if n == "workspace" or n == ws:
+        return None  # the directory itself is not a script
+    if n.startswith("workspace/"):
+        return ws + n[len("workspace"):]
+    if n.startswith(ws + "/"):
+        return n
+    if n.startswith("opt/"):
+        return None  # managed data outside the workspace (cron.json, ...)
+    # Bare / relative paths ("hello.py", "jobs/daily.py") live at the
+    # workspace root, Hermes-scripts-dir style.
+    return ws + "/" + n
+
+
+def _script_display(norm):
+    """Device norm -> user-facing path ('/workspace/...'). Never raises."""
+    try:
+        import fsutil as _fs
+        ws = _fs.DATA_WORKSPACE
+        if norm == ws:
+            return "/workspace"
+        if norm.startswith(ws + "/"):
+            return "/workspace/" + norm[len(ws) + 1:]
+        return "/" + norm
+    except Exception:
+        try:
+            return "/" + str(norm)
+        except Exception:
+            return "/workspace/"
+
+
+def _run_script(norm):
+    """Exec a workspace .py file, capture print() output.
+
+    Authenticated-user code (same trust as Files writes), so unlike exec_py
+    there is no import blocklist — scripts may touch machine/network/os.
+    Returns (True, output) or (False, err). Bounded read (SCRIPT_MAX) and
+    output (SCRIPT_OUT_MAX). Never raises."""
+    try:
+        import fsutil as _fs
+        res, err, size = _fs.read_text(norm, SCRIPT_MAX + 1)
+    except Exception as e:
+        return False, "read failed: %s" % str(e)[:80]
+    if err:
+        return False, err
+    try:
+        src = res["content"]
+    except Exception:
+        return False, "unreadable script"
+    try:
+        if res.get("truncated"):
+            return False, "script too large (%dB, max %dB)" % (size, SCRIPT_MAX)
+    except Exception:
+        pass
+    try:
+        if not src.strip():
+            return False, "script is empty"
+    except Exception:
+        return False, "script is empty"
+    lines = []
+
+    def _emit(*a, **k):
+        try:
+            lines.append(" ".join(str(x) for x in a))
+        except Exception:
+            pass
+
+    try:
+        exec(src, {"print": _emit})
+    except Exception as e:
+        return False, "exec failed: %s" % str(e)[:200]
+    out = "\n".join(lines)
+    if len(out) > SCRIPT_OUT_MAX:
+        out = out[:SCRIPT_OUT_MAX]
+    return True, out
+
+
 def list_jobs():
     try:
         st = _load()
@@ -248,7 +380,7 @@ def list_jobs():
 
 
 def add(prompt, every_s=3600, deliver="log", webhook_url="", skills=None,
-        now=None, url=None):
+        now=None, url=None, script=None, no_agent=False, name=""):
     try:
         st = _load()
     except Exception:
@@ -261,11 +393,27 @@ def add(prompt, every_s=3600, deliver="log", webhook_url="", skills=None,
         pr = str(prompt if prompt is not None else "").strip()
     except Exception:
         pr = ""
-    if not pr:
-        return {"success": False, "error": "prompt is required"}
     if len(pr) > PROMPT_MAX:
         return {"success": False,
                 "error": "prompt too long (%d chars, max %d)" % (len(pr), PROMPT_MAX)}
+    sn = _norm_script(script)
+    if sn is None:
+        return {"success": False,
+                "error": "script must live under workspace/ (e.g. workspace/hello.py)"}
+    try:
+        na = bool(no_agent) if no_agent is not None else False
+    except Exception:
+        na = False
+    try:
+        nm = str(name if name is not None else "").strip()[:NAME_MAX]
+    except Exception:
+        nm = ""
+    if not pr and not (na and sn):
+        return {"success": False,
+                "error": "prompt is required (or no_agent with a script)"}
+    if na and not sn:
+        return {"success": False,
+                "error": "no_agent needs a script under workspace/"}
     if every_s is None:
         every_s = 3600
     ev = _clamp_every(every_s)
@@ -285,9 +433,10 @@ def add(prompt, every_s=3600, deliver="log", webhook_url="", skills=None,
         t = int(now) if now is not None else _now()
     except Exception:
         t = _now()
-    job = {"id": _alloc_id(jobs), "prompt": pr, "every_s": ev,
+    job = {"id": _alloc_id(jobs), "name": nm, "prompt": pr, "every_s": ev,
            "next_run": t + ev, "enabled": True, "deliver": dv,
-           "webhook_url": wu, "skills": sk, "created": t}
+           "webhook_url": wu, "skills": sk, "script": sn, "no_agent": na,
+           "created": t}
     jobs.append(job)
     try:
         _save(st)
@@ -297,11 +446,15 @@ def add(prompt, every_s=3600, deliver="log", webhook_url="", skills=None,
 
 
 def edit(jid, prompt=None, every_s=None, deliver=None, webhook_url="",
-         skills=None, now=None, url=None):
+         skills=None, now=None, url=None, script=None, no_agent=None,
+         name=None):
     """Edit a job in place: id + created are preserved, next_run
     reschedules from now (even when paused). Any arg left as None keeps
     its stored value; validation mirrors add() (prompt <=1500 chars,
     every_s clamped 60..86400, deliver whitelist incl. telegram-stored).
+    script="..." sets a workspace script, script="" clears it; no_agent
+    flips script-only mode; name="..." relabels, name="" clears the label.
+    A job needs a prompt OR (no_agent + script).
     Never raises."""
     try:
         st = _load()
@@ -316,8 +469,6 @@ def edit(jid, prompt=None, every_s=None, deliver=None, webhook_url="",
             pr = str(prompt).strip()
         except Exception:
             pr = ""
-        if not pr:
-            return {"success": False, "error": "prompt is required"}
         if len(pr) > PROMPT_MAX:
             return {"success": False,
                     "error": "prompt too long (%d chars, max %d)" % (len(pr), PROMPT_MAX)}
@@ -353,6 +504,40 @@ def edit(jid, prompt=None, every_s=None, deliver=None, webhook_url="",
         if serr:
             return {"success": False, "error": serr}
         j["skills"] = sk
+    if script is not None:
+        sn = _norm_script(script)
+        if sn is None:
+            return {"success": False,
+                    "error": "script must live under workspace/ (e.g. workspace/hello.py)"}
+        j["script"] = sn
+    if no_agent is not None:
+        try:
+            j["no_agent"] = bool(no_agent)
+        except Exception:
+            pass
+    if name is not None:
+        try:
+            j["name"] = str(name).strip()[:NAME_MAX]
+        except Exception:
+            pass
+    try:
+        _pr = str(j.get("prompt", "") or "").strip()
+    except Exception:
+        _pr = ""
+    try:
+        _sn = str(j.get("script", "") or "")
+    except Exception:
+        _sn = ""
+    try:
+        _na = bool(j.get("no_agent", False))
+    except Exception:
+        _na = False
+    if not _pr and not (_na and _sn):
+        return {"success": False,
+                "error": "prompt is required (or no_agent with a script)"}
+    if _na and not _sn:
+        return {"success": False,
+                "error": "no_agent needs a script under workspace/"}
     try:
         t = int(now) if now is not None else _now()
     except Exception:
@@ -606,13 +791,22 @@ def _post(url, body_text):
 
 def _default_run(prompt_text):
     import agent_core
-    return agent_core.runTurn(prompt_text, [])
+    try:
+        import sessions as _sess
+        _log = _sess.ACTIVITY_PATH
+    except Exception:
+        _log = None
+    return agent_core.runTurn(prompt_text, [], log_path=_log)
 
 
 def run_job(job, run_fn=None):
-    """Run one job now: skills prefix + run_fn + log + delivery. The schedule
-    is NOT touched (see run_now/tick). run_fn(prompt)->reply; default is
-    agent_core.runTurn with empty history. Never raises."""
+    """Run one job now: skills prefix + optional script + run_fn + log +
+    delivery. The schedule is NOT touched (see run_now/tick).
+    run_fn(prompt)->reply; default is agent_core.runTurn with empty history.
+
+    A workspace script (job["script"]) runs first: in agent mode its stdout
+    is prepended to the prompt; with no_agent=true the script runs INSTEAD
+    of the agent turn and stdout is delivered verbatim. Never raises."""
     try:
         jid = str(job.get("id", "?"))[:16]
     except Exception:
@@ -621,21 +815,56 @@ def run_job(job, run_fn=None):
         prompt = str(job.get("prompt", "") or "")
     except Exception:
         prompt = ""
-    if not prompt.strip():
-        return {"success": False, "id": jid, "error": "job has no prompt"}
+    try:
+        script_norm = _norm_script(job.get("script", "")) or ""
+    except Exception:
+        script_norm = ""
+    try:
+        no_agent = bool(job.get("no_agent", False))
+    except Exception:
+        no_agent = False
+    disp = _script_display(script_norm) if script_norm else ""
     try:
         prefix, loaded, missing = _skills_prefix(job.get("skills", []))
     except Exception:
         prefix, loaded, missing = "", [], []
-    full = (prefix + prompt) if prefix else prompt
-    if len(full) > PROMPT_MAX:
-        full = full[:PROMPT_MAX]
-    fn = run_fn if run_fn is not None else _default_run
-    try:
-        reply = fn(full)
-    except Exception as e:
-        return {"success": False, "id": jid,
-                "error": "cron run failed: %s" % str(e)[:120]}
+    if no_agent:
+        if not script_norm:
+            return {"success": False, "id": jid,
+                    "error": "no_agent job has no script"}
+        try:
+            ok, res = _run_script(script_norm)
+        except Exception as e:
+            return {"success": False, "id": jid,
+                    "error": "script failed: %s" % str(e)[:120]}
+        if not ok:
+            return {"success": False, "id": jid,
+                    "error": "script failed: %s" % str(res)[:120]}
+        reply = res
+        loaded, missing = [], []
+        prompt = ""
+    else:
+        if not prompt.strip() and not script_norm:
+            return {"success": False, "id": jid, "error": "job has no prompt"}
+        ctx = ""
+        if script_norm:
+            try:
+                ok, res = _run_script(script_norm)
+            except Exception as e:
+                ok, res = False, str(e)[:120]
+            if ok:
+                ctx = "Script %s output:\n%s\n---\n" % (disp, res)
+            else:
+                ctx = "Script %s failed: %s\n---\n" % (disp, res[:300])
+        full = (prefix + ctx + prompt) if (prefix or ctx) else prompt
+        if len(full) > PROMPT_MAX:
+            full = full[:PROMPT_MAX]
+        fn = run_fn if run_fn is not None else _default_run
+        try:
+            reply = fn(full)
+        except Exception as e:
+            return {"success": False, "id": jid,
+                    "error": "cron run failed: %s" % str(e)[:120]}
     if reply is None:
         reply = ""
     try:
@@ -644,7 +873,13 @@ def run_job(job, run_fn=None):
         reply = ""
     try:
         import agent_tools
-        agent_tools.appendChatLog("[cron %s] %s" % (jid, prompt[:200]), reply)
+        tag = "[cron %s]" % jid
+        if disp:
+            tag = "[cron %s %s]" % (jid, disp)
+        user_part = (tag + " " + prompt[:200]) if prompt.strip() else tag
+        # Activity, not a session: a cron run must not show up as a
+        # conversation on /sessions nor be injected as fake history.
+        agent_tools.appendActivity(user_part, reply)
         logged = True
     except Exception:
         logged = False
@@ -685,7 +920,8 @@ def run_job(job, run_fn=None):
             delivered, reason = False, "telegram-phase-8"
     out = {"success": True, "id": jid, "reply": reply, "logged": logged,
            "delivered": delivered, "target": target,
-           "skills_loaded": loaded, "skills_missing": missing}
+           "skills_loaded": loaded, "skills_missing": missing,
+           "script": disp, "no_agent": no_agent}
     if reason:
         out["reason"] = reason
     return out
@@ -813,7 +1049,9 @@ def handle(d):
                        d.get("every_s", d.get("every", 3600)),
                        d.get("deliver", "log"),
                        d.get("webhook_url", d.get("url", "")),
-                       d.get("skills", []))
+                       d.get("skills", []), None, None,
+                       d.get("script", None), d.get("no_agent", None),
+                       d.get("name", None))
         if op in ("list", "get"):
             return list_jobs()
         if op == "edit":
@@ -825,7 +1063,9 @@ def handle(d):
             return edit(jid, d.get("prompt", None), ev_arg,
                         d.get("deliver", None),
                         d.get("webhook_url", d.get("url", "")),
-                        d.get("skills", None))
+                        d.get("skills", None), None, None,
+                        d.get("script", None), d.get("no_agent", None),
+                        d.get("name", None))
         if op in ("pause", "resume", "remove", "run_now"):
             jid = str(d.get("id", "") or "").strip()
             if not jid:

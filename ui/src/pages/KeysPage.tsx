@@ -20,6 +20,7 @@ export function KeysPage() {
   const [confirm, setConfirm] = useState('')
   const [show, setShow] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
+  const [unlockUser, setUnlockUser] = useState('admin')
   const [unlockToken, setUnlockToken] = useState('')
 
   useEffect(() => {
@@ -58,12 +59,12 @@ export function KeysPage() {
   }
 
   const doUnlock = async () => {
-    const ok = await unlock(unlockToken)
+    const ok = await unlock(unlockUser, unlockToken)
     if (ok) {
       push('ok', 'Dashboard unlocked')
       setUnlockToken('')
     } else {
-      push('err', 'That token was rejected')
+      push('err', 'Invalid username or password')
     }
   }
 
@@ -102,10 +103,26 @@ export function KeysPage() {
             <Panel title="Unlock this dashboard" icon={<Unlock className="h-3.5 w-3.5" />}>
               <div className="flex flex-col gap-3 px-3.5 py-3">
                 <p className="text-[0.8rem] leading-relaxed text-text-secondary">
-                  This device requires an auth token for every <code>/api</code> call. Paste it here —
-                  it is stored in this browser's localStorage only, and sent as a bearer header.
+                  Sign in as <code>admin</code> with the device password — or use the full{' '}
+                  <a href="/login" className="underline underline-offset-2">
+                    login screen
+                  </a>
+                  . The password is stored in this browser's localStorage only, and sent as a
+                  bearer header.
                 </p>
-                <div className="flex gap-1.5">
+                <div className="flex flex-col gap-1.5 sm:flex-row">
+                  <input
+                    className="input font-mono-ui sm:max-w-40"
+                    type="text"
+                    value={unlockUser}
+                    onChange={(e) => setUnlockUser(e.target.value)}
+                    placeholder="admin"
+                    autoComplete="username"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    aria-label="Username"
+                  />
                   <input
                     className="input font-mono-ui"
                     type={show ? 'text' : 'password'}
@@ -114,19 +131,44 @@ export function KeysPage() {
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') void doUnlock()
                     }}
-                    placeholder="device auth token"
-                    autoComplete="off"
+                    placeholder="device password"
+                    autoComplete="current-password"
+                    aria-label="Password"
                   />
                   <Button variant="ghost" size="sm" onClick={() => setShow((v) => !v)}>
                     {show ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
                   </Button>
-                  <Button variant="primary" size="sm" onClick={() => void doUnlock()} disabled={!unlockToken.trim()}>
+                  <Button variant="primary" size="sm" onClick={() => void doUnlock()} disabled={!unlockUser.trim() || !unlockToken}>
                     Unlock
                   </Button>
                 </div>
               </div>
             </Panel>
           )}
+
+          <Panel title="Provider API key" icon={<KeyRound className="h-3.5 w-3.5" />}>
+            <div className="flex flex-col gap-2 px-3.5 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[0.78rem] text-text-secondary">Stored upstream credential</span>
+                {authed ? (
+                  <Chip tone={status?.endpoint_configured ? 'success' : 'danger'}>
+                    {status?.endpoint_configured ? 'configured' : 'missing'}
+                  </Chip>
+                ) : (
+                  <Chip tone="muted">unknown while locked</Chip>
+                )}
+              </div>
+              <p className="text-[0.72rem] leading-relaxed text-text-faint">
+                The provider key lives in <code>config.yaml</code> and is never returned in full —
+                only a masked form. Change it on the Config page.
+              </p>
+              <div>
+                <a href="/config" className="btn btn-sm">
+                  Open Config
+                </a>
+              </div>
+            </div>
+          </Panel>
 
           <Panel title="Device auth token" icon={<Shield className="h-3.5 w-3.5" />}>
             <div className="flex flex-col gap-3 px-3.5 py-3">
@@ -198,30 +240,6 @@ export function KeysPage() {
                     {next.length < 8 ? 'too short' : 'does not match'}
                   </span>
                 )}
-              </div>
-            </div>
-          </Panel>
-
-          <Panel title="Provider API key" icon={<KeyRound className="h-3.5 w-3.5" />}>
-            <div className="flex flex-col gap-2 px-3.5 py-3">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[0.78rem] text-text-secondary">Stored upstream credential</span>
-                {authed ? (
-                  <Chip tone={status?.endpoint_configured ? 'success' : 'danger'}>
-                    {status?.endpoint_configured ? 'configured' : 'missing'}
-                  </Chip>
-                ) : (
-                  <Chip tone="muted">unknown while locked</Chip>
-                )}
-              </div>
-              <p className="text-[0.72rem] leading-relaxed text-text-faint">
-                The provider key lives in <code>config.yaml</code> and is never returned in full —
-                only a masked form. Change it on the Config page.
-              </p>
-              <div>
-                <a href="/config" className="btn btn-sm">
-                  Open Config
-                </a>
               </div>
             </div>
           </Panel>

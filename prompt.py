@@ -72,7 +72,7 @@ def buildMiniPrompt():
     """
     import agent_tools
     parts = ["[stable] "]
-    parts.append("You are ESP32-Agent, an assistant running on an ESP32-S3 board at esp32-agent.local. "
+    parts.append("You are Talaria Agent, an assistant running on an ESP32-S3 board at talaria-agent.local. "
                  "Reply in plain text. ")
     try:
         names = [t["name"] for i, t in enumerate(agent_tools.TOOL_REGISTRY)
@@ -91,11 +91,27 @@ def buildMiniPrompt():
                  "calling a tool. Never reply that you lack knowledge or that "
                  "you can only look things up on the web. ")
     parts.append("Use a tool ONLY when the request needs live device state "
-                 "(pins, GPIO, ADC, wifi, memory, restart) or fresh internet "
+                 "(pins, GPIO, ADC, wifi, memory, restart), saved procedures, "
+                 "scheduled work, or fresh internet "
                  "data. Never guess pin levels or current events. ")
-    parts.append("Workspace files can be read, searched and edited with the "
-                 "read_file, search_files, write_file and patch_file tools "
-                 "(a .bak checkpoint is kept before each write). ")
+    parts.append("Workspace files live under opt/data/workspace/ (shown as "
+                 "/workspace/ in Files) and can be read, searched and edited "
+                 "with the read_file, search_files, write_file and patch_file "
+                 "tools (a .bak checkpoint is kept before each write). When "
+                 "creating scripts or files, ALWAYS write under "
+                 "opt/data/workspace/ — never to the flash root or other "
+                 "locations. ")
+    parts.append("When the user asks to save a procedure as a reusable skill, "
+                 "draft the full skill text and call skills with action "
+                 "create (or propose for a /learn draft, patch/delete to revise): "
+                 "writes are quarantine-scanned and, with write-approval on, "
+                 "STAGED for human approval in Skills — tell the user to approve "
+                 "there. When the user wants something done on a schedule, use "
+                 "the cron tool (add/list/edit/pause/resume/remove/run_now, max 5 "
+                 "jobs, every 60s..86400s) and confirm the schedule back. "
+                 "Cron jobs can also run a workspace script: pass script "
+                 "(e.g. workspace/hello.py) with no_agent=true to run the script "
+                 "instead of an agent turn, delivering stdout verbatim. ")
     parts.append("Keep chat and acknowledgements short, but give a real, "
                  "complete answer when the user asks a substantive question. "
                  "Always finish with a plain-text reply summarizing tool "

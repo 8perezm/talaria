@@ -27,7 +27,7 @@ def _run(args):
 TOOL = {
     "name": "skill_view",
     "ui_hint": "Load a full skill by name",
-    "description": ("Load the full text of one skill by name (first consult skills_list). "
+    "description": ("Load the full text of one skill by name (first consult skills). "
                     "Use 'bundle:<name>' to expand a skill bundle; missing members are "
                     "skipped and noted. Load a skill when its summary matches the task, "
                     "then follow its Procedure and Verification sections."),

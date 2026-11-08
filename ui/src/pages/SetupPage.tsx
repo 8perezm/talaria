@@ -278,7 +278,7 @@ export function SetupPage() {
 
           <p className="px-1 text-[0.72rem] leading-relaxed text-text-faint">
             The device also exposes a captive portal when it cannot join a network: connect to
-            <code> ESP32-Agent-Setup</code> and you will land on the WiFi page automatically.
+            <code> Talaria-Agent-Setup</code> and you will land on the WiFi page automatically.
           </p>
         </div>
       </PageBody>

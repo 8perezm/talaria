@@ -187,7 +187,7 @@ def test_drift_refuse_and_reject(tmp_path, monkeypatch):
     r = skills.patch("drift", "Do the thing", "Do the other thing")
     assert r.get("staged"), r
     pid = r["pending_id"]
-    with open("skills/drift.md", "w") as f:  # external drift behind staged write
+    with open(os.path.join(skills.SKILLS_DIR, "drift.md"), "w") as f:  # external drift behind staged write
         f.write(_body("v1 edited elsewhere"))
     a = skills.approve(pid)
     assert a["success"] is False
@@ -203,7 +203,7 @@ def test_direct_create_approval_off(tmp_path, monkeypatch):
     _skills_approval(False)
     r = skills.create("direct", _body("direct summary"))
     assert r["success"] and not r.get("staged")
-    assert "Procedure" in open("skills/direct.md").read()
+    assert "Procedure" in open(os.path.join(skills.SKILLS_DIR, "direct.md")).read()
 
 
 # ---- patch / delete ----
@@ -247,7 +247,8 @@ def test_bundle_expand_missing_skip(tmp_path, monkeypatch):
     _skills_approval(False)
     assert skills.create("a-skill", _body("alpha"))["success"]
     assert skills.create("b-skill", _body("beta"))["success"]
-    with open("bundles.json", "w") as f:
+    os.makedirs(os.path.dirname(skills.BUNDLES_PATH), exist_ok=True)
+    with open(skills.BUNDLES_PATH, "w") as f:
         f.write(json.dumps({"basics": ["a-skill", "ghost", "b-skill"]}))
     assert skills.list_bundles() == ["basics"]
     r = skills.expand_bundle("basics")
@@ -320,14 +321,14 @@ def test_api_skills_crud_pending_blocklist(tmp_path, monkeypatch):
 def test_tool_slots_and_dispatch(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     names = [t["name"] for t in agent_tools.TOOL_REGISTRY]
-    assert names.index("skills_list") == 11 and names.index("skill_view") == 12
+    assert names.index("skills") == 11 and names.index("skill_view") == 12
     assert names[15:18] == ["todo", "delegate_task", "exec_py"] and len(names) == 22
     assert agent_tools.all_tools_mask() == 0x3FFFFF
     _skills_approval(False)
-    s = agent_tools.execTool("skills_list", {"action": "list"})
+    s = agent_tools.execTool("skills", {"action": "list"})
     d = json.loads(s)
     assert d["success"] is True and d["count"] == 0
-    s = agent_tools.execTool("skills_list", {"action": "propose", "name": "t1",
+    s = agent_tools.execTool("skills", {"action": "propose", "name": "t1",
                                              "content": _body("t1 summary")})
     # propose always stages, even with approval off
     assert json.loads(s).get("staged") is True
@@ -335,11 +336,23 @@ def test_tool_slots_and_dispatch(tmp_path, monkeypatch):
     assert json.loads(s)["success"] is False  # staged, not loadable
     assert skills.approve("all")["success"] is True
     assert "Procedure" in json.loads(agent_tools.execTool("skill_view", {"name": "t1"}))["content"]
-    with open("bundles.json", "w") as f:
+    # chat-side writes through the same tool (approval off: direct)
+    s = agent_tools.execTool("skills", {"action": "create", "name": "t2",
+                                        "content": _body("t2 summary")})
+    assert json.loads(s)["success"] is True
+    assert "Procedure" in json.loads(agent_tools.execTool("skill_view", {"name": "t2"}))["content"]
+    s = agent_tools.execTool("skills", {"action": "patch", "name": "t2",
+                                        "old_text": "Do the thing",
+                                        "content": "Do the other thing"})
+    assert json.loads(s)["success"] is True
+    s = agent_tools.execTool("skills", {"action": "delete", "name": "t2"})
+    assert json.loads(s)["success"] is True
+    assert json.loads(agent_tools.execTool("skill_view", {"name": "t2"}))["success"] is False
+    with open(skills.BUNDLES_PATH, "w") as f:
         f.write(json.dumps({"one": ["t1", "ghost"]}))
     r = json.loads(agent_tools.execTool("skill_view", {"name": "bundle:one"}))
     assert r["success"] and r["missing"] == ["ghost"]
-    assert "error" in json.loads(agent_tools.execTool("skills_list", {"action": "frobnicate"}))
+    assert "error" in json.loads(agent_tools.execTool("skills", {"action": "frobnicate"}))
 
 
 # ---- micropython portability ----
@@ -371,15 +384,16 @@ def test_engine_module_never_collides_with_data_dir():
     assert sessions.PENDING_SKILLS_DIR != "sessions"
     managed_dirs = {skillstore.SKILLS_DIR, skillstore.PENDING_DIR,
                     sessions.SKILLS_DIR, sessions.PENDING_SKILLS_DIR}
-    assert managed_dirs == {"skills", "pending_skills"}
-    # bundles.json lives at the repo root: its parent dir is "" (never a
-    # module name) and its stem must not become an engine module either.
-    assert os.path.dirname(skillstore.BUNDLES_PATH) == ""
+    assert managed_dirs == {"opt/data/skills", "opt/data/pending_skills"}
+    # bundles.json lives under the data home now: its parent dir is
+    # opt/data (never a module name) and its stem must not become one either.
+    assert os.path.dirname(skillstore.BUNDLES_PATH) == "opt/data"
     assert "bundles" not in ("skillstore", "sessions", "memory")
-    # repo-root sweep: no .py basename may equal any managed data dir, so
-    # re-adding a `skills.py` (or pending_skills.py) fails here, on host,
+    # repo-root sweep: no .py basename may equal any managed data dir basename,
+    # so re-adding a `skills.py` (or pending_skills.py) fails here, on host,
     # instead of 500ing on device.
     base = os.path.join(os.path.dirname(__file__), "..")
     py_names = {f[:-3] for f in os.listdir(base) if f.endswith(".py")}
-    clash = py_names & managed_dirs
+    managed_basenames = {d.rsplit("/", 1)[-1] for d in managed_dirs}
+    clash = py_names & managed_basenames
     assert not clash, "engine module collides with data dir: %s" % sorted(clash)

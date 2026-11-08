@@ -25,7 +25,8 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   session; `microdot` + `pytest` too (host-side only).
 - Helper scripts live in `C:\Users\miguel\AppData\Local\Temp\opencode\`
   (`repl_check.py`, `soft_reset.py`, `stop_app.py`, `deploy_raw.py`, …).
-  Reuse them instead of one-liners.
+  Reuse them instead of one-liners. For uploads prefer the repo CLI
+  `scripts/esp_deploy.py` (multi-file copy + size verify in one invocation).
 - Repo has host tests: `python -m pytest tests/ -q` (13 tests, hardware stubbed
   in `tests/stubs.py`). Run after every edit.
 
@@ -88,7 +89,8 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   `package.json`, fails). Don't retry mip; copy files. **`erase-flash` wipes
   these — remember to re-deploy `/lib` after any flash.**
 - `erase-flash` also wipes `config.yaml` (WiFi creds, API key, auth token),
-  `config.json.bak` and `chatlog.jsonl`. Back them up first — read them over
+  `config.json.bak`, every saved conversation (`opt/data/sessions/`) and the
+  activity log. Back them up first — read them over
   the REPL as base64 chunks (`binascii.b2a_base64`) and restore after.
 
 ## MicroPython platform limits (cost real bugs)
@@ -119,6 +121,17 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
 
 ## mpremote
 
+- **Upload with `scripts/esp_deploy.py`, not bare `mpremote cp` loops.**
+  One CLI invocation copies N files and verifies every one, so the agent
+  spends one tool call per batch instead of one per file:
+  `python scripts/esp_deploy.py server.py llm.py tools/tool_x.py --reset`.
+  Specs are `LOCAL[:REMOTE]` (remote defaults to the repo-relative path);
+  `--verify-only` compares device sizes to local without copying;
+  `--raw` uses a single raw-serial session (base64 chunks) instead of
+  mpremote subprocesses; `--reset` reboots after the batch. Pure mapping /
+  parsing helpers are pinned by `tests/test_esp_deploy.py` (no hardware).
+  Live-tested on the bench board in both modes (multi-file copy + verify,
+  cross-backend verify agreement on a raw-uploaded file).
 - **With the correct SPIRAM_OCT firmware, `mpremote` is reliable and fast.**
   All 26 app files + `/lib/microdot` deployed with correct sizes in one pass
   (one `mpremote connect COM11 cp <local> :<remote>` per file). The old
@@ -179,17 +192,30 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   Event contract is unchanged (`delta`/`reasoning`/`need_tools`/DONE), and
   `need_tools` still makes `chat.html` fall back to `/api/chat` for the
   agentic tool loop (verified: `get_status` at 5.1s).
+- **Cron script jobs (Hermes parity, 2026-11-08):** jobs have optional
+  `script` (workspace `.py`, norm `opt/data/workspace/...`, shown as
+  `/workspace/...` in Files) + `no_agent` bool. `no_agent=true` runs the
+  script INSTEAD of the agent turn and delivers stdout verbatim (Hermes
+  "no_agent: run the script only"); otherwise stdout is prepended to the
+  agent prompt. Bare names map to the workspace root (`hello.py` →
+  `workspace/hello.py`); `..` and `opt/...` outside the workspace are
+  refused. Scripts exec with print-capture (8 KB source / 1 KB output caps,
+  no exec_py import blocklist — same trust as Files writes). A job needs a
+  prompt OR (no_agent + script). Jobs have an optional `name` display label
+  (<=60 chars, Hermes parity). Covered by `tests/test_cron_scripts.py`.
+- **Chat-created files live under `opt/data/workspace/`** (prompt + tool
+  descriptions pin this; no code jail — flashing tests write at the repo
+  root). Cron scripts must be there too (enforced in `cron._norm_script`).
+- **Chat header button is "New Chat"** (not Clear) and shows no toast on
+  success — `ui/src/pages/ChatPage.tsx`. Keep it that way.
 - **Chat memory:** the SSE path must call `agent_tools.appendChatLog` after a
-  successful stream, or normal chat leaves `chatlog.jsonl` empty and the device
+  successful stream, or normal chat leaves the session file empty and the device
   forgets everything after a refresh (this was a real bug — the C++ original
   had it too). Do not log when `{"need_tools":true}` is sent: the browser's
   `/api/chat` fallback owns that turn. `ChatPage.tsx` restores the transcript
   from `/api/memory` (no `?tail=`; the device picks the depth from Config) and
-  seeds its `history` array; its **Clear** button posts `{"clear_log":true}` to
-  `/api/memory`, empties `history` and the view, and bumps the turn sequence so
-  a pending restore cannot re-add old turns. Log injection is skipped whenever
-  the browser sends history (`if not history`) so the same turns are not sent
-  twice in the prompt.
+  seeds its `history` array. Log injection is skipped whenever the browser
+  sends history (`if not history`) so the same turns are not sent twice.
   **Per-message retention is configurable:** `config.cfgChatEntryChars`
   (`chat.entry_chars` in config.yaml, Config → Chat), default 4000,
   clamped 500–20000. It bounds both `agent_tools.appendChatLog` (storage) and
@@ -198,7 +224,7 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   reload — don't reintroduce them. The LLM **prompt** caps in
   `injectRecentLog` / `llm.addHistoryCapped` (1500 chars) are separate on
   purpose. Changing the setting affects new messages only; entries already in
-  the log keep the text they were stored with.
+  a session keep the text they were stored with.
   **Rolling storage is config, not constants** (Config → Chat history):
   `chat_log_max_kb` (default 320, 64–4096), `chat_log_keep_kb` (default 200,
   32–max−32) and `chat_restore_turns` (default 20, 1–60). The old constants
@@ -212,11 +238,44 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   retained tail through a temp file in blocks, then swaps. RAM is one block +
   the requested entries, independent of log size. Measured on-device against a
   **1 MB** log: `tail=40` 1.72 s, `tail=4` 0.23 s (the old whole-file reader
-  would pull the full megabyte). This is the groundwork for pointing
-  `agent_tools.LOG_PATH` at USB storage later; the remaining steps are the
-  mount (`/sd`), allowing that path in `fsutil`'s `_WRITE_REFUSED_NAMES` /
-  Explorer root logic, and `/update`'s state-file blocklist. Do not replace
-  the block readers with `f.read()` — that reintroduces the RAM/latency wall.
+  would pull the full megabyte). Do not replace the block readers with
+  `f.read()` — that reintroduces the RAM/latency wall.
+- **Sessions are conversations (2026-11-08, replaces the single-log model).**
+  Storage is `opt/data/sessions/<id>.jsonl` — one file per conversation,
+  append-only, plus `opt/data/sessions/active.json` (`{"id": ...}`) pointing at
+  the web UI's current one. Web ids are `w<epoch>`; Telegram ids come from
+  `sessions.session_id_for()` (flattened `mini_telegram_<chat>`), and Telegram
+  resolves its file per turn so it can never hijack the web pointer.
+  `GET /api/sessions` returns **conversations** (`{id,title,created,bytes,
+  kind,active}`), `POST /api/sessions` starts one, `/api/sessions/activate`
+  re-points the web UI, and `/api/sessions/delete` deletes a whole
+  conversation (deleting the active one creates a fresh session). New Chat
+  creates the id and points `active.json` at it; the file only appears on the
+  first turn, so repeated presses cannot litter the store.
+  **Old ids are refused, not reinterpreted:** `sessions.safe_id()` allows only
+  `[a-z0-9_-]`, so the retired turn ids (`chatlog.jsonl:0:1:<hash>`) 400
+  instead of addressing a file. `delete_turn`/`_drop_lines`/`_parse_turn_id`
+  are gone with the old Session-page rows.
+  **Migration:** `sessions.ensure_store()` (called from `initAgentFS` and every
+  store reader) renames a legacy `chatlog.jsonl`/`chatlog.prev.jsonl` into two
+  session files by mtime and makes the newer one active. Nothing is deleted.
+  **`agent_tools.LOG_PATH` is no longer "the chat log".** It stays the legacy
+  default; `agent_tools.active_log_path()` resolves
+  `opt/data/sessions/<active>` on every call (never cache it in a global — a
+  cached path survives a remount and writes to the wrong conversation).
+  `appendChatLog`/`injectRecentLog`/`llm.callLLMWithTools`/`agent_core.runTurn`
+  accept `log_path=`, which is how a turn is pinned to one session.
+  **Cron is not a conversation.** `agent_tools.appendActivity()` writes
+  `opt/data/activity.jsonl` (own 128/64 KB budget) and `cron._default_run`
+  passes `log_path=ACTIVITY_PATH`, so job output is neither listed on
+  /sessions nor injected as fake user/assistant history into the next chat
+  turn. Before this split the last-8 log lines fed cron output back into the
+  user's prompt.
+  `/api/sessions` stays separate from `/api/trajectory` on purpose — the
+  ShareGPT export keeps its exact shape and its tests pin it. `/api/memory`
+  takes `?session=<id>` (and `?activate=1`), returns `session`, and exports
+  `chatlog_tail` in `/api/backup` from the active conversation.
+  `/api/reset` wipes every session file plus the activity log.
 - Streaming must use **HTTP/1.1**; HTTP/1.0 servers cannot send chunked
   bodies, so an SSE response would either be buffered or require closing the
   connection to signal the end. The buffered path (`_post_raw`) stays on
@@ -233,8 +292,9 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   in 1.9 KB, so this was prompt-induced, not a model limit. Keep the explicit
   "you have full general knowledge, answer directly without a tool" clause,
   and do not re-add "low RAM" (the board has ~8 MB free now).
-- `config.yaml`, `config.json`, `config.json.bak`, `memory.txt`, `chatlog.jsonl`
-  are gitignored device state. `/update` refuses them (plus `config.yaml.tmp`).
+- `config.yaml`, `config.json`, `config.json.bak`, `memory.txt`, `cron.json`,
+  `opt/data/sessions/` and `opt/data/activity.jsonl` are gitignored device
+  state. `/update` refuses them (plus `config.yaml.tmp`).
   Keep that blocklist. The first boot after an upgrade migrates `config.json`
   into `config.yaml` and renames the old file to `config.json.bak`.
 - **No native dialogs app-wide:** `alert()`, `confirm()` and `prompt()` are
@@ -258,7 +318,11 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   ascending). Sorting is client-side over the listed entries.
   Micro-only affordance kept: clicking a **file name** opens the full-screen
   editor (Ctrl+S saves) instead of downloading; the Download icon downloads.
-  The editor is portaled to `<body>` — without that the shell's `z-[2]`
+  The editor opens in View mode with offline syntax highlighting
+  (`ui/src/lib/highlight.ts`, zero deps — a highlight.js bundle was rejected
+  as too heavy for the flash budget and unneeded since a CDN is banned
+  offline) and an Edit tab switches to the plain textarea. The editor is
+  portaled to `<body>` — without that the shell's `z-[2]`
   stacking context paints the sidebar over it. `Modal` is portaled for the same
   reason (its backdrop must dim the sidebar too).
   Backend is pure `os.ilistdir`/`os.stat` helpers (`_fs_norm`,
@@ -267,14 +331,54 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   download-only. Download accepts the auth token as `?token=` because plain
   links cannot set headers. Uploads are text-read client-side and written via
   `/api/files/save` (the multipart `/api/files/upload` endpoint also exists).
+- **Data home (`/opt/data`, Hermes parity):** `/api/files` is LOCKED to the
+  user-data home — `/` lists `/opt/data`, every path maps under it, system
+  code at flash `/` is unreachable through Files by construction (same idea
+  as Hermes' `locked_root` on `/opt/data`). User state lives here:
+  `memory.txt`, `user.txt`, `sessions/` (one file per conversation),
+  `activity.jsonl` (`+.prev`), `cron.json`,
+  `tg.json`, `bundles.json`, `pending_mem.json`, `skills/`,
+  `pending_skills/`, plus `workspace/` (pre-created empty, reserved for later
+  agent work). First boot after upgrade migrates pre-split root files into
+  `/opt/data` (`fsutil.ensure_data_tree`, called from
+  `agent_tools.initAgentFS`; best-effort, never raises) and the legacy
+  single log into `sessions/` (`sessions.ensure_store`). Writes under
+  `opt/data/sessions/` are refused by the file tools — conversations are
+  append-only and owned by the store. `config.yaml` stays
+  at `/` and is owned by the Config page, not Files. The agent's
+  `read_file`/`write_file`/`search_files` keep full-flash access (refusals
+  updated for the new prefixes); only the human browser is scoped.
+- **System hatch (`/api/system/files*`):** full-flash list/read/download/save/
+  mkdir/delete/rename with the same auth, caps and `.bak` checkpoints as
+  Files, but a separate route + UI surface so a normal Files click can never
+  brick the device. `config.yaml` edits validate + reload here (moved from
+  `/api/files/save`); the Config page remains the primary editor. Delete
+  refuses `opt` and `opt/data` (use `/api/reset`). Pinned by the lock/hatch
+  tests in `tests/test_mini_phase7.py`.
+- **Login gate:** full-screen `/login` route (Hermes-style, Talaria palette),
+  fixed username `admin`, password = `security.auth_token`. `POST /api/login`
+  is a stateless verifier over the existing Bearer mechanism (no
+  cookies/sessions on the MCU — the browser keeps the token in `esp32_token`
+  localStorage). Locked devices redirect to `/login`; `/setup`, `/wifi`,
+  `/update` never redirect. Scoped API keys later slot into `unlock()` and
+  the Bearer check without reworking this. Pinned by `tests/test_login.py`
+  and `test_login_gate_shape` in `tests/test_spa.py` (`/login` is a utility
+  route, exempt from nav parity like `/setup`).
 
 ## Deploy flow that works
 
-1. Use the SERIAL port (`COM11` last seen — verify, it moves).
-2. One `mpremote connect <PORT> cp <local> :<remote>` per file, then verify
-   each with `os.stat(...)[6]` == local size. No sleeps needed now. Deploy
-   `tools/` and `www/` into existing dirs; `os.mkdir` them first via
-   `mpremote exec` if missing. Re-deploy `/lib/microdot` after any flash.
+1. Use the SERIAL port (`COM11` last seen — verify, it moves; the CLI
+   auto-detects the CH343 bridge, `--port` overrides).
+2. Batch the upload in ONE invocation (the CLI loops internally — mpremote
+   misparses chained `cp a :a cp b :b`, so one operation per *mpremote*
+   call, but many files per *CLI* call):
+   `python scripts/esp_deploy.py <files...> --reset`. Parent dirs are
+   created automatically; every file is size-verified (`os.stat(...)[6]`
+   == local size) with a single batched stat, and `SUMMARY ok=X fail=Y`
+   reports the batch. An echoed "cp ok" proves nothing — only SIZE
+   equality passes. No sleeps needed now. Re-deploy `/lib/microdot` after
+   any flash. `deploy.ps1` remains the full-deploy path (all code + UI +
+   reboot + HTTP wait); the CLI is the incremental path.
 3. Soft-reset (`Ctrl-C` then `Ctrl-D`, or `mpremote reset`) → confirm the
    banner and `WiFi OK:`/`AP started:`. `[ntp] time synced:` only appears on a
    full power cycle — a soft reset keeps the RTC and skips NTP.
@@ -334,9 +438,12 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   (`/setup`, `/wifi`, `/update`) are exempt — they are linked from the pages
   that own them.
 - **House rules pinned by tests:** no `alert`/`confirm`/`prompt` anywhere (use
-  the promise-based `useConfirm` modal), no CDN/Google-Fonts, palette and
-  square corners unchanged, `esp32_token` localStorage key preserved so an
-  already-unlocked browser stays unlocked across the upgrade.
+  the promise-based `useConfirm` modal), no CDN (single carve-out:
+  `ui/src/lib/theme.ts` fetches user-selected Google Fonts on demand for
+  Config → Theme; everything else must stay dependency-free),
+  Talaria palette defaults unchanged in `index.css`, `esp32_token`
+  localStorage key preserved so an already-unlocked browser stays unlocked
+  across the upgrade.
 - **Client request gate: `MAX_CONCURRENT = 1`** in `ui/src/lib/api.ts`. The
   ESP32's lwIP drops extra SYNs when several fresh connections arrive at
   once; TCP then retransmits on a 1/2/4 s backoff, which looked like an 8 s
@@ -348,8 +455,8 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
 - **`fsutil.list_dir` does ONE stat per entry.** `os.ilistdir` already gives
   type and size; the old three-stats-per-entry version made a 33-entry root
   listing take 8.8 s. Now ~2.2 s. Keep it at one.
-- Field debugging: `window.__hermes` holds live dashboard state,
-  `window.__hermesNet` the last 40 API calls with timings. Both are cheap and
+- Field debugging: `window.__talaria` holds live dashboard state,
+  `window.__talariaNet` the last 40 API calls with timings. Both are cheap and
   worth keeping — they are the only console the device has.
 - Upload path: `POST /api/ui/asset?path=assets/app.js` writes a bundle file
   (≤900 KB, only `index.html`/`favicon.svg`/`assets/*`). It failed for a
@@ -409,5 +516,65 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   `config.get_approval()`; do not reintroduce direct `config.json` reads.
 - `main.py` restarts the Microdot server loop if it returns, so a wedged
   handler becomes a 2s restart instead of a silent drop to the REPL.
+
+## Theme fonts: three roles, one source, applied before first paint (2026-11-08)
+
+- **Defaults are graphite + Poppins (headers) / Space Grotesk (body) /
+  JetBrains Mono (terminal)** — in `config_schema.py` FIELDS, `config.py`
+  `DEFAULT_THEME_*`, `ui/src/lib/theme.ts` `THEME_DEFAULTS` and the baked-in
+  `index.css` `:root` tokens (keep all four in sync; `test_theme_config` and
+  `test_design_tokens_are_the_talaria_palette` pin them).
+
+- **Exactly three type roles**, all from `config.yaml` via CSS custom
+  properties set on `<html>` by `ui/src/lib/theme.ts`:
+  `theme.font_headers` → `--theme-font-display` (page titles, `.panel-head`,
+  `.label-display`, `.field-label`, `.chip`, `.table th`, `.md h1-3`),
+  `theme.font_body` → `--theme-font-sans` (html/body/paragraphs/chat/buttons/
+  inputs), `theme.font_mono` → `--theme-font-mono` (`code`, `pre`, `.font-mono-ui`,
+  logs, the file editor). `theme.font_body_size` sets the root font-size, so
+  every rem utility scales with it.
+- **No component may hard-code a family.** `index.css` only ever writes
+  `var(--theme-font-*)` (plus `inherit` for `.code-view code`), and the only
+  inline `fontFamily` allowed is `fontStack(...)` in `ThemeSection.tsx`, which
+  exists to *preview* a font before it is saved. `tests/test_theme_fonts.py`
+  audits all of `ui/src` for violations — it caught panel titles, chips,
+  field labels, table heads and markdown headings still using the body stack,
+  so setting a Headers font used to change almost nothing.
+- **First paint matters.** `applyTheme()` runs after a `/api/config/form`
+  round trip (0.5–1.5 s behind the client gate), so before 2026-11-08 every
+  page painted in the stock stack and visibly swapped afterwards — the likely
+  origin of "the chat doesn't use my font". Now `applyTheme` caches the values
+  in `localStorage['talaria_theme']` and `main.tsx` calls `applyBootTheme()`
+  **before** `createRoot().render()`, so the first frame is already themed;
+  `ThemeApplier` then reconciles with the device. Unsaved Config previews pass
+  `{cache: false}` and never become the boot theme.
+- **Locked views keep the look.** The `/login` gate cannot read the config
+  (API is auth-gated), so it applies the cached theme instead of resetting to
+  defaults; only a browser that has never seen a theme falls back to stock.
+
+## Sessions page: ordering + one export per conversation (2026-11-08)
+
+- The list has two ordering controls (`BY DATE` / `SIZE`) in the Conversations
+  panel header, left of the stored-count chip; client-side over the fetched
+  page. Clicking the active one flips asc/desc. Default = date descending
+  (newest first), matching `sessions.list_sessions()`.
+- **Export is a row action**, one button next to Delete. The old page-level
+  Export only dumped the *active* conversation's `/api/memory` tail, so it is
+  gone. Each row downloads
+  `GET /api/sessions/export?id=<sid>&token=<auth>` — a plain `<a>` download
+  (hence `?token=`, same pattern as `/api/files/download`) that returns
+  `text/plain` + `Content-Disposition: attachment; filename="talaria-<sid>.txt"`.
+- The sidebar bottom row is `theme` (left, deep-links to Config → Theme via
+  `/config?section=theme`, consumed + cleared by `ConfigPage`) next to
+  `Restart` (right-aligned text + icon).
+- **Clickable = hand cursor.** Tailwind v4's preflight resets buttons to the
+  arrow, so `index.css` base layer sets `button:not(:disabled) { cursor:
+  pointer }` once instead of per-file classes. `test_spa.py` pins the rule
+  and restricts `cursor-default` to full-screen modal backdrops.
+- `sessions.export_text()` reads the file line by line with `_parse_line_full`
+  (no `TRAJ_VALUE_CAP` truncation — the trajectory export caps at 1500 chars,
+  a downloaded transcript must not) and stops at `EXPORT_MAX_CHARS` (400 KB)
+  so a huge log cannot allocate the whole file twice. Pinned by
+  `tests/test_sessions_export.py`.
 
 

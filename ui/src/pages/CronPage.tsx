@@ -8,6 +8,7 @@ import { PageBody, PageHeader, StatusChip } from '@/components/Shell'
 
 interface CronJob {
   id: string
+  name?: string
   prompt: string
   every_s: number
   next_run: number | null
@@ -15,6 +16,8 @@ interface CronJob {
   deliver: string
   webhook_url?: string
   skills?: string[]
+  script?: string
+  no_agent?: boolean
   created?: number
 }
 
@@ -27,6 +30,7 @@ interface CronResponse {
 }
 
 const PRESETS = [
+  { label: 'every 1 min', seconds: 60 },
   { label: 'every 5 min', seconds: 300 },
   { label: 'every 15 min', seconds: 900 },
   { label: 'hourly', seconds: 3600 },
@@ -54,15 +58,34 @@ function nextIn(next: number | null): string {
   return `in ${Math.round(diff / 86400)}d`
 }
 
+function toScriptInput(stored: string | undefined): string {
+  if (!stored) return ''
+  const prefix = 'opt/data/workspace/'
+  if (stored === 'opt/data/workspace') return 'workspace/'
+  if (stored.startsWith(prefix)) return `workspace/${stored.slice(prefix.length)}`
+  return stored
+}
+
+function toScriptDisplay(stored: string | undefined): string {
+  if (!stored) return ''
+  const prefix = 'opt/data/workspace/'
+  if (stored === 'opt/data/workspace') return '/workspace'
+  if (stored.startsWith(prefix)) return `/workspace/${stored.slice(prefix.length)}`
+  return stored.startsWith('/') ? stored : `/${stored}`
+}
+
 export function CronPage() {
   const { push } = useToast()
   const { confirm, confirmNode } = useConfirm()
   const [editorOpen, setEditorOpen] = useState(false)
   const [editing, setEditing] = useState<CronJob | null>(null)
+  const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
   const [every, setEvery] = useState(3600)
   const [deliver, setDeliver] = useState('log')
   const [webhook, setWebhook] = useState('')
+  const [script, setScript] = useState('')
+  const [noAgent, setNoAgent] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
 
   const cron = usePolled<CronResponse>((signal) => api.get('/api/cron', undefined, signal), 8000)
@@ -72,29 +95,35 @@ export function CronPage() {
 
   const openNew = () => {
     setEditing(null)
+    setName('')
     setPrompt('')
     setEvery(3600)
     setDeliver('log')
     setWebhook('')
+    setScript('')
+    setNoAgent(false)
     setEditorOpen(true)
   }
 
   const openEdit = (job: CronJob) => {
     setEditing(job)
+    setName(job.name || '')
     setPrompt(job.prompt || '')
     setEvery(job.every_s || 3600)
     setDeliver(job.deliver || 'log')
     setWebhook(job.webhook_url || '')
+    setScript(toScriptInput(job.script))
+    setNoAgent(!!job.no_agent)
     setEditorOpen(true)
   }
 
   const save = async () => {
-    if (!prompt.trim()) return
+    if (!prompt.trim() && !(noAgent && script.trim())) return
     setBusy('save')
     try {
       const body = editing
-        ? { op: 'edit', id: editing.id, prompt: prompt.trim(), every_s: every, deliver, webhook_url: webhook }
-        : { op: 'add', prompt: prompt.trim(), every_s: every, deliver, webhook_url: webhook }
+        ? { op: 'edit', id: editing.id, name: name.trim(), prompt: prompt.trim(), every_s: every, deliver, webhook_url: webhook, script: script.trim(), no_agent: noAgent }
+        : { op: 'add', name: name.trim(), prompt: prompt.trim(), every_s: every, deliver, webhook_url: webhook, script: script.trim(), no_agent: noAgent }
       const res = await api.post<{ success?: boolean; error?: string }>('/api/cron', body)
       if (!res.success) throw new Error(res.error || 'cron rejected the job')
       push('ok', editing ? 'Job updated' : 'Job scheduled')
@@ -109,7 +138,7 @@ export function CronPage() {
 
   const act = async (job: CronJob, op: 'pause' | 'resume' | 'remove' | 'run_now') => {
     if (op === 'remove') {
-      const ok = await confirm('Delete job', `"${job.prompt.slice(0, 90)}" will stop running and be removed.`)
+      const ok = await confirm('Delete job', `"${(job.name || job.prompt).slice(0, 90)}" will stop running and be removed.`)
       if (!ok) return
     }
     setBusy(`${op}:${job.id}`)
@@ -171,11 +200,24 @@ export function CronPage() {
                         </Chip>
                         <Chip tone="muted">{everyLabel(job.every_s)}</Chip>
                         <Chip tone="muted">→ {job.deliver}</Chip>
+                        {job.script ? (
+                          <Chip tone="muted">▶ {toScriptDisplay(job.script)}</Chip>
+                        ) : null}
+                        {job.no_agent ? <Chip tone="success">script-only</Chip> : null}
                         <span className="font-mono-ui text-[0.66rem] text-text-faint">{job.id}</span>
                       </div>
                       <p className="mt-1 line-clamp-2 text-[0.82rem] leading-relaxed text-midground">
-                        {job.prompt}
+                        {job.name ? (
+                          <span className="font-bold">{job.name}</span>
+                        ) : (
+                          job.prompt || (job.script ? `Run ${toScriptDisplay(job.script)}` : '')
+                        )}
                       </p>
+                      {job.name && (job.prompt || job.script) ? (
+                        <p className="mt-0.5 line-clamp-2 text-[0.76rem] leading-relaxed text-text-tertiary">
+                          {job.prompt || `Run ${toScriptDisplay(job.script)}`}
+                        </p>
+                      ) : null}
                       <p className="mt-0.5 text-[0.7rem] text-text-faint">
                         next {nextIn(job.next_run)}
                         {job.created ? ` · created ${relativeTime(job.created)}` : ''}
@@ -230,7 +272,9 @@ export function CronPage() {
 
           <p className={cn('px-1 text-[0.7rem] leading-relaxed text-text-faint')}>
             Delivery <code>log</code> writes the reply to the device log; <code>webhook</code> POSTs it
-            to a URL you provide. Jobs survive reboots because they live in <code>cron.json</code>.
+            to a URL you provide. A script runs a <code>.py</code> file from the workspace
+            (<code>/workspace/…</code> in Files) before the agent turn — with script-only it replaces the
+            turn and stdout is delivered verbatim. Jobs survive reboots because they live in <code>cron.json</code>.
           </p>
         </div>
       </PageBody>
@@ -245,14 +289,23 @@ export function CronPage() {
             <Button variant="ghost" onClick={() => setEditorOpen(false)}>
               Cancel
             </Button>
-            <Button variant="primary" loading={busy === 'save'} disabled={!prompt.trim()} onClick={() => void save()}>
+            <Button variant="primary" loading={busy === 'save'} disabled={!prompt.trim() && !(noAgent && script.trim())} onClick={() => void save()}>
               {editing ? 'Save' : 'Schedule'}
             </Button>
           </>
         }
       >
         <div className="flex flex-col gap-3">
-          <Field label="Prompt" hint="Sent to the model verbatim when the job fires.">
+          <Field label="Name (optional)" hint="Display label for this job.">
+            <input
+              className="input"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={60}
+              placeholder="e.g. Daily summary"
+            />
+          </Field>
+          <Field label="Prompt" hint="Sent to the model verbatim when the job fires. Optional for script-only jobs.">
             <textarea
               className="input min-h-[5rem] resize-y"
               value={prompt}
@@ -260,6 +313,25 @@ export function CronPage() {
               placeholder="Summarise today's device log and report anything unusual."
             />
           </Field>
+          <Field label="Script (optional)" hint="A .py file under workspace/ (e.g. workspace/hello.py). Runs first; its output is prepended to the prompt — or replaces the agent turn with script-only.">
+            <input
+              className="input font-mono-ui text-[0.76rem]"
+              value={script}
+              onChange={(e) => setScript(e.target.value)}
+              placeholder="workspace/hello.py"
+            />
+          </Field>
+          <label className="flex cursor-pointer items-start gap-2 text-[0.76rem] text-text-secondary">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={noAgent}
+              onChange={(e) => setNoAgent(e.target.checked)}
+            />
+            <span>
+              Script only (no agent) — run the script and deliver stdout verbatim.
+            </span>
+          </label>
           <Field label="Interval">
             <div className="flex flex-wrap gap-1.5">
               {PRESETS.map((preset) => (

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ComponentType } from 'react'
+import { useSearchParams } from 'react-router'
 import {
   Bot,
   Code,
@@ -9,6 +10,7 @@ import {
   Filter,
   Lock,
   MessageSquare,
+  Palette,
   RotateCw,
   Save,
   Search,
@@ -21,6 +23,8 @@ import {
 import { api, setToken } from '@/lib/api'
 import { useAppData } from '@/lib/app-data'
 import { cn } from '@/lib/utils'
+import { notifyThemeChanged, THEME_DEFAULTS } from '@/lib/theme'
+import { ThemeSection } from '@/pages/ThemeSection'
 import {
   Button,
   Chip,
@@ -107,6 +111,7 @@ const CATEGORY_ICONS: Record<string, ComponentType<{ className?: string }>> = {
   fallback: ShieldCheck,
   network: Wifi,
   chat: MessageSquare,
+  theme: Palette,
   security: Lock,
 }
 
@@ -156,6 +161,7 @@ export function ConfigPage() {
   const [restartPending, setRestartPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({})
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const applyForm = useCallback((data: ConfigFormResponse) => {
     const next: Values = {}
@@ -200,6 +206,15 @@ export function ConfigPage() {
   useEffect(() => {
     void loadForm()
   }, [loadForm])
+
+  /* Deep link from the sidebar ("theme" next to Restart): /config?section=theme
+     selects that section on arrival, then drops the param. */
+  useEffect(() => {
+    const want = searchParams.get('section')
+    if (!want || !form || !form.categories.some((cat) => cat.id === want)) return
+    setActive(want)
+    setSearchParams({}, { replace: true })
+  }, [form, searchParams, setSearchParams])
 
   const loadYaml = useCallback(async (reveal: boolean) => {
     setYamlLoading(true)
@@ -276,6 +291,19 @@ export function ConfigPage() {
     })
   }
 
+  const resetTheme = () => {
+    setValues((prev) => ({
+      ...prev,
+      'theme.color_scheme': THEME_DEFAULTS.scheme,
+      'theme.font_headers': THEME_DEFAULTS.fontHeaders,
+      'theme.font_headers_size': THEME_DEFAULTS.fontHeadersSize,
+      'theme.font_body': THEME_DEFAULTS.fontBody,
+      'theme.font_body_size': THEME_DEFAULTS.fontBodySize,
+      'theme.font_mono': THEME_DEFAULTS.fontMono,
+      'theme.font_mono_size': THEME_DEFAULTS.fontMonoSize,
+    }))
+  }
+
   const saveForm = async () => {
     if (!form) return
     const payload: Values = {}
@@ -323,6 +351,7 @@ export function ConfigPage() {
       setYamlDirty(false)
       await refreshStatus()
       await refreshConfig()
+      notifyThemeChanged()
     } catch (err) {
       push('err', err instanceof Error ? err.message : 'Save failed')
     } finally {
@@ -352,6 +381,7 @@ export function ConfigPage() {
       await loadForm()
       await refreshStatus()
       await refreshConfig()
+      notifyThemeChanged()
     } catch (err) {
       push('err', err instanceof Error ? err.message : 'Save failed')
     } finally {
@@ -620,17 +650,6 @@ export function ConfigPage() {
                 )}
               </div>
             )}
-            {mode === 'form' && (
-              <Button
-                size="sm"
-                variant="primary"
-                loading={saveBusy}
-                disabled={!form}
-                onClick={() => void saveForm()}
-              >
-                <Save className="h-3 w-3" /> Save
-              </Button>
-            )}
           </>
         )}
       />
@@ -671,17 +690,15 @@ export function ConfigPage() {
                   : <Code className="h-3 w-3" />}
                 {mode === 'yaml' ? 'Form' : 'YAML'}
               </Button>
-              {mode === 'yaml' && (
-                <Button
-                  size="sm"
-                  variant="primary"
-                  loading={saveBusy}
-                  disabled={yamlLoading || !yamlText.trim()}
-                  onClick={() => void saveYaml()}
-                >
-                  <Save className="h-3 w-3" /> Save
-                </Button>
-              )}
+              <Button
+                size="sm"
+                variant="primary"
+                loading={saveBusy}
+                disabled={mode === 'form' ? !form : yamlLoading || !yamlText.trim()}
+                onClick={() => void (mode === 'form' ? saveForm() : saveYaml())}
+              >
+                <Save className="h-3 w-3" /> Save
+              </Button>
             </div>
           </div>
 
@@ -817,7 +834,16 @@ export function ConfigPage() {
                         {activeCategory.description}
                       </p>
                     )}
-                    {groupFields(activeFields).map((group) => renderGroup(group.label, group.fields))}
+                    {active === 'theme' ? (
+                      <ThemeSection
+                        fields={activeFields}
+                        values={values}
+                        setValue={setValue}
+                        onReset={resetTheme}
+                      />
+                    ) : (
+                      groupFields(activeFields).map((group) => renderGroup(group.label, group.fields))
+                    )}
                     {active === 'network' && (
                       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
                         <p className="text-[0.72rem] leading-snug text-text-faint">

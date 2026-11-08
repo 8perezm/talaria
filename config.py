@@ -11,6 +11,8 @@
 #   fallback:   endpoint / model / api_key
 #   network:    wifi_ssid / wifi_pass / mdns_name / ap_ssid
 #   chat:       entry_chars / restore_turns / log_max_kb / log_keep_kb
+#   theme:      color_scheme / font_headers(+_size) / font_body(+_size) /
+#               font_mono(+_size) — dashboard look, browser-applied, no restart
 #   security:   auth_token / memory_write_approval / skills_write_approval
 #   tools:      mask
 #
@@ -27,9 +29,9 @@ except ImportError:
 import config_schema as schema
 import yamlish
 
-AP_SSID = "ESP32-Agent-Setup"
+AP_SSID = "Talaria-Agent-Setup"
 AP_PASS = ""  # open AP for easy onboarding
-MDNS_NAME = "esp32-agent"
+MDNS_NAME = "talaria-agent"
 CONFIG_PATH = "config.yaml"
 LEGACY_CONFIG_PATH = "config.json"
 LEGACY_BACKUP_PATH = "config.json.bak"
@@ -67,6 +69,30 @@ CHAT_RESTORE_TURNS_MAX = 60
 cfgChatLogMaxKB = DEFAULT_CHAT_LOG_MAX_KB
 cfgChatLogKeepKB = DEFAULT_CHAT_LOG_KEEP_KB
 cfgChatRestoreTurns = DEFAULT_CHAT_RESTORE_TURNS
+
+# Dashboard theme (Config -> Theme). All browser-applied, no restart.
+# Defaults are the graphite scheme plus the Google fonts above; size vars
+# only take effect when changed.
+DEFAULT_THEME_SCHEME = "graphite"
+DEFAULT_THEME_FONT_HEADERS = "Poppins"
+DEFAULT_THEME_FONT_BODY = "Space Grotesk"
+DEFAULT_THEME_FONT_MONO = "JetBrains Mono"
+DEFAULT_THEME_HEADERS_SIZE = 15
+THEME_HEADERS_SIZE_MIN = 10
+THEME_HEADERS_SIZE_MAX = 32
+DEFAULT_THEME_BODY_SIZE = 15
+THEME_BODY_SIZE_MIN = 10
+THEME_BODY_SIZE_MAX = 24
+DEFAULT_THEME_MONO_SIZE = 13
+THEME_MONO_SIZE_MIN = 10
+THEME_MONO_SIZE_MAX = 24
+cfgThemeScheme = DEFAULT_THEME_SCHEME
+cfgThemeFontHeaders = DEFAULT_THEME_FONT_HEADERS
+cfgThemeHeadersSize = DEFAULT_THEME_HEADERS_SIZE
+cfgThemeFontBody = DEFAULT_THEME_FONT_BODY
+cfgThemeBodySize = DEFAULT_THEME_BODY_SIZE
+cfgThemeFontMono = DEFAULT_THEME_FONT_MONO
+cfgThemeMonoSize = DEFAULT_THEME_MONO_SIZE
 
 # tools mask is initialised after tools registry import to avoid circular import.
 # Default: all-on (see agent_tools.all_tools_mask()).
@@ -164,6 +190,38 @@ def _clamp_chat_restore_turns(v, default=DEFAULT_CHAT_RESTORE_TURNS):
         return CHAT_RESTORE_TURNS_MIN
     if n > CHAT_RESTORE_TURNS_MAX:
         return CHAT_RESTORE_TURNS_MAX
+    return n
+
+
+def _theme_scheme(v, default=DEFAULT_THEME_SCHEME):
+    try:
+        text = str(v).strip()
+    except Exception:
+        return default
+    if text in schema.THEME_SCHEME_IDS:
+        return text
+    return default
+
+
+def _theme_font(v, options, default="System Default"):
+    try:
+        text = str(v).strip()
+    except Exception:
+        return default
+    if text in options:
+        return text
+    return default
+
+
+def _clamp_theme_size(v, lo, hi, default):
+    try:
+        n = int(v)
+    except Exception:
+        return default
+    if n < lo:
+        return lo
+    if n > hi:
+        return hi
     return n
 
 
@@ -300,6 +358,20 @@ def _value_for_key(key):
         return cfgChatLogMaxKB
     if key == "chat.log_keep_kb":
         return cfgChatLogKeepKB
+    if key == "theme.color_scheme":
+        return cfgThemeScheme
+    if key == "theme.font_headers":
+        return cfgThemeFontHeaders
+    if key == "theme.font_headers_size":
+        return cfgThemeHeadersSize
+    if key == "theme.font_body":
+        return cfgThemeFontBody
+    if key == "theme.font_body_size":
+        return cfgThemeBodySize
+    if key == "theme.font_mono":
+        return cfgThemeFontMono
+    if key == "theme.font_mono_size":
+        return cfgThemeMonoSize
     if key == "security.auth_token":
         return cfgAuthToken
     return None
@@ -470,7 +542,7 @@ _order_add(_DUMP_ORDER, "tools", "mask")
 def dump_doc(doc):
     """Render the config document as commented, hand-editable YAML."""
     lines = [
-        "# Hermes Agent (micro) - configuration",
+        "# Talaria Agent (micro) - configuration",
         "# Edit by hand or use Config in the dashboard. Secrets are stored here.",
         "# The dashboard masks them as **** unless you press Reveal.",
         "",
@@ -530,6 +602,8 @@ def _apply_doc(doc):
     global cfgSsid, cfgPass, cfgEndpoint, cfgApiKey, cfgModel, cfgAuthToken
     global cfgFallbackEndpoint, cfgFallbackKey, cfgFallbackModel, agent_max_iters
     global cfgChatEntryChars, cfgChatLogMaxKB, cfgChatLogKeepKB, cfgChatRestoreTurns
+    global cfgThemeScheme, cfgThemeFontHeaders, cfgThemeHeadersSize
+    global cfgThemeFontBody, cfgThemeBodySize, cfgThemeFontMono, cfgThemeMonoSize
     global cfgMdnsName, cfgApSsid, gToolsMask
     cfgSsid = _text(schema.get_path(doc, "network.wifi_ssid", ""))
     cfgPass = _text(schema.get_path(doc, "network.wifi_pass", ""))
@@ -556,6 +630,28 @@ def _apply_doc(doc):
         cfgChatLogMaxKB)
     cfgChatRestoreTurns = _clamp_chat_restore_turns(
         schema.get_path(doc, "chat.restore_turns", DEFAULT_CHAT_RESTORE_TURNS))
+    cfgThemeScheme = _theme_scheme(
+        schema.get_path(doc, "theme.color_scheme", DEFAULT_THEME_SCHEME))
+    cfgThemeFontHeaders = _theme_font(
+        schema.get_path(doc, "theme.font_headers", DEFAULT_THEME_FONT_HEADERS),
+        schema.THEME_HEADERS_FONT_OPTIONS)
+    cfgThemeHeadersSize = _clamp_theme_size(
+        schema.get_path(doc, "theme.font_headers_size",
+                        DEFAULT_THEME_HEADERS_SIZE),
+        THEME_HEADERS_SIZE_MIN, THEME_HEADERS_SIZE_MAX,
+        DEFAULT_THEME_HEADERS_SIZE)
+    cfgThemeFontBody = _theme_font(
+        schema.get_path(doc, "theme.font_body", DEFAULT_THEME_FONT_BODY),
+        schema.THEME_BODY_FONT_OPTIONS)
+    cfgThemeBodySize = _clamp_theme_size(
+        schema.get_path(doc, "theme.font_body_size", DEFAULT_THEME_BODY_SIZE),
+        THEME_BODY_SIZE_MIN, THEME_BODY_SIZE_MAX, DEFAULT_THEME_BODY_SIZE)
+    cfgThemeFontMono = _theme_font(
+        schema.get_path(doc, "theme.font_mono", DEFAULT_THEME_FONT_MONO),
+        schema.THEME_MONO_FONT_OPTIONS)
+    cfgThemeMonoSize = _clamp_theme_size(
+        schema.get_path(doc, "theme.font_mono_size", DEFAULT_THEME_MONO_SIZE),
+        THEME_MONO_SIZE_MIN, THEME_MONO_SIZE_MAX, DEFAULT_THEME_MONO_SIZE)
     try:
         from agent_tools import all_tools_mask, TOOL_REGISTRY
         all_on = all_tools_mask()

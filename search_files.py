@@ -30,7 +30,8 @@ def _run(args):
 TOOL = {
     "name": "search_files",
     "ui_hint": "Search workspace files (max 20 hits)",
-    "description": ("Search workspace files for a substring "
+    "description": ("Search files under opt/data/workspace/ (shown as "
+                    "/workspace/ in Files) for a substring "
                     "(case-insensitive): {pattern, root=\"/\"}. Returns up "
                     "to 20 file:line matches with snippets; binary and "
                     "oversize files are skipped, the walk never leaves "

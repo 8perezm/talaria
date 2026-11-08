@@ -39,13 +39,13 @@ export function LogsPage() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = 'hermes-device.log'
+    a.download = 'talaria-device.log'
     a.click()
     URL.revokeObjectURL(url)
   }
 
   const clear = async () => {
-    const ok = await confirm('Clear device log', 'The in-RAM ring buffer is emptied. This does not touch chatlog.jsonl or memory.txt.')
+    const ok = await confirm('Clear device log', 'The in-RAM ring buffer is emptied. This does not touch saved conversations or memory.txt.')
     if (!ok) return
     try {
       await api.post('/api/logs/clear')

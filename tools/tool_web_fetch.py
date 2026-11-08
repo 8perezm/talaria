@@ -186,7 +186,7 @@ def _http_get(url):
                 s.settimeout(_TIMEOUT)
             except Exception:
                 pass
-        req = ("GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: ESP32-Agent/1.0\r\n"
+        req = ("GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: Talaria-Agent/1.0\r\n"
                "Accept: text/html,text/plain,*/*\r\nConnection: close\r\n\r\n"
                % (path, host)).encode()
         sent = 0

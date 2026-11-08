@@ -24,9 +24,9 @@ try:
 except ImportError:
     import json
 
-MEM_PATH = "memory.txt"
-USER_PATH = "user.txt"
-PENDING_PATH = "pending_mem.json"
+MEM_PATH = "opt/data/memory.txt"
+USER_PATH = "opt/data/user.txt"
+PENDING_PATH = "opt/data/pending_mem.json"
 MEM_CAP = 2200
 USER_CAP = 1375
 _PREVIEW_LEN = 80
@@ -107,6 +107,14 @@ def _render(entries):
 
 def _write_entries(target, entries):
     path = _path_for(target)
+    try:
+        import fsutil as _fs
+        try:
+            _fs.ensure_data_tree()
+        except Exception:
+            pass
+    except Exception:
+        pass
     with open(path, "w") as f:
         f.write(_render(entries))
 
@@ -389,6 +397,14 @@ def _read_pending():
 
 
 def _write_pending(recs):
+    try:
+        import fsutil as _fs
+        try:
+            _fs.ensure_data_tree()
+        except Exception:
+            pass
+    except Exception:
+        pass
     with open(PENDING_PATH, "w") as f:
         f.write(json.dumps(recs))
 

@@ -101,9 +101,11 @@ def test_missing_files_are_minus_one(tmp_path, monkeypatch):
 
 def test_file_sizes_reported(tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path)
-    payloads = {"config.json": "x" * 10, "memory.txt": "abc",
-                "user.txt": "", "chatlog.jsonl": "{}\n",
-                "chatlog.prev.jsonl": "y" * 100, "cron.json": "{}"}
+    import os as _os
+    _os.makedirs(str(tmp_path / "opt" / "data" / "sessions"), exist_ok=True)
+    payloads = {"config.json": "x" * 10, "opt/data/memory.txt": "abc",
+                "opt/data/user.txt": "", "opt/data/sessions/active.json": "{}\n",
+                "opt/data/cron.json": "{}"}
     for name, text in payloads.items():
         with open(str(tmp_path / name), "w", encoding="utf-8") as f:
             f.write(text)

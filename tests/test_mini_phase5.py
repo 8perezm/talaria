@@ -48,7 +48,8 @@ def _request(method, path, payload=None):
 
 
 def _write_state(jobs):
-    with open("cron.json", "w") as f:
+    os.makedirs("opt/data", exist_ok=True)
+    with open("opt/data/cron.json", "w") as f:
         f.write(json.dumps({"jobs": jobs}))
 
 
@@ -139,13 +140,13 @@ def test_pause_resume_remove_bad_id(tmp_path, monkeypatch):
 def test_tick_idle_no_write(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     cron.add("idle", 3600, now=10000)  # next_run = 13600
-    before = open("cron.json", "rb").read()
-    st = os.stat("cron.json")
+    before = open("opt/data/cron.json", "rb").read()
+    st = os.stat("opt/data/cron.json")
     r = cron.tick(11000)  # before next_run: nothing due
     assert r["due"] == [] and r["changed"] is False
-    st2 = os.stat("cron.json")
+    st2 = os.stat("opt/data/cron.json")
     assert st2.st_size == st.st_size
-    assert open("cron.json", "rb").read() == before
+    assert open("opt/data/cron.json", "rb").read() == before
     try:
         assert st2.st_mtime_ns == st.st_mtime_ns
     except AttributeError:
@@ -178,11 +179,11 @@ def test_missed_run_single_catchup(tmp_path, monkeypatch):
 def test_disabled_skip_no_write(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     _write_state([_job(next_run=100, enabled=False)])
-    before = open("cron.json", "rb").read()
+    before = open("opt/data/cron.json", "rb").read()
     n = []
     r = cron.tick(99999, lambda p: n.append(p) or "must not run")
     assert r["due"] == [] and n == [] and r["changed"] is False
-    assert open("cron.json", "rb").read() == before  # stale next_run untouched
+    assert open("opt/data/cron.json", "rb").read() == before  # stale next_run untouched
 
 
 def test_run_now_keeps_schedule(tmp_path, monkeypatch):
@@ -202,8 +203,8 @@ def test_run_now_keeps_schedule(tmp_path, monkeypatch):
 # ---- run_job: skills prefix, log, delivery ----
 
 def _write_skill(name="demo"):
-    os.mkdir("skills") if not os.path.exists("skills") else None
-    with open("skills/%s.md" % name, "w") as f:
+    os.makedirs("opt/data/skills", exist_ok=True)
+    with open("opt/data/skills/%s.md" % name, "w") as f:
         f.write("// desc: demo skill\n# Demo\n\nWhen to use: tests.\n\n"
                 "Procedure:\n1. Test.\n\nPitfalls: none.\n\n"
                 "Verification: look.\n")
@@ -223,12 +224,14 @@ def test_skills_prefix_and_missing(tmp_path, monkeypatch):
 def test_log_delivery_appends_once(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     before = 0
-    if os.path.exists("chatlog.jsonl"):
-        before = sum(1 for ln in open("chatlog.jsonl") if ln.strip())
+    if os.path.exists("opt/data/activity.jsonl"):
+        before = sum(1 for ln in open("opt/data/activity.jsonl") if ln.strip())
     r = cron.run_job(_job(), lambda p: "logged reply")
     assert r["success"] and r["delivered"] is True and r["target"] == "log"
-    after = sum(1 for ln in open("chatlog.jsonl") if ln.strip())
+    after = sum(1 for ln in open("opt/data/activity.jsonl") if ln.strip())
     assert after - before == 2  # one appendChatLog: user + assistant
+    # Cron output must NOT pollute a conversation session.
+    assert not os.path.exists("opt/data/chatlog.jsonl")
 
 
 def test_webhook_stub(tmp_path, monkeypatch):

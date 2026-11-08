@@ -15,9 +15,9 @@ const SECTIONS: Section[] = [
   {
     id: 'start',
     title: 'Getting started',
-    body: `This dashboard is the web face of a **micro Hermes agent** — the same
-shell, palette and interaction model as the desktop Hermes Agent, running on
-an ESP32-S3 with 8 MB of PSRAM.
+    body: `This dashboard is the web face of **Talaria Agent** — a micro agent
+running on an ESP32-S3 with 8 MB of PSRAM, with the same shell, palette and
+interaction model as the desktop Hermes Agent it is modelled on.
 
 ## What it can do
 
@@ -72,13 +72,14 @@ stay correct.`,
 | Store | File | Contents |
 | --- | --- | --- |
 | Facts | \`memory.txt\` | durable one-liners the agent chose to keep |
-| Transcript | \`chatlog.jsonl\` | the rolling conversation log |
+| Conversations | \`sessions/<id>.jsonl\` | one file per chat, append-only |
 
 The agent writes facts with the \`mem_save\` tool. On a fresh page the Chat view
-rehydrates from the transcript tail, so a refresh does not lose the thread.
+rehydrates from that session's tail, so a refresh does not lose the thread.
 
-**Clear** on the Chat page rotates the transcript into \`chatlog.prev.jsonl\`
-rather than deleting it — a cheap single-generation backup.`,
+**New Chat** starts another session file — nothing is overwritten, and every
+conversation on the **Sessions** page can be reopened. Cron output goes to
+\`activity.jsonl\` so scheduled jobs never appear as conversations.`,
   },
   {
     id: 'skills',

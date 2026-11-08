@@ -134,11 +134,11 @@ def test_no_match_includes_closest(tmp_path, monkeypatch):
 def test_exact_duplicate(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     assert memory.add("device", "dup fact")["success"]
-    before = open("memory.txt").read()
+    before = open(memory.MEM_PATH).read()
     r = memory.add("device", "dup fact")
     assert r["success"] is True
     assert "duplicate" in r.get("message", "").lower()
-    assert open("memory.txt").read() == before
+    assert open(memory.MEM_PATH).read() == before
 
 
 def test_span_occurs_twice_rejected(tmp_path, monkeypatch):
@@ -229,14 +229,15 @@ def test_migration_trims_oldest_first(tmp_path, monkeypatch):
         lines.append("- entry-%02d " % i + "y" * 60 + "\n")
     raw = "".join(lines)
     assert len(raw) > 2200
-    with open("memory.txt", "w") as f:
+    os.makedirs(os.path.dirname(memory.MEM_PATH), exist_ok=True)
+    with open(memory.MEM_PATH, "w") as f:
         f.write(raw)
     snap = memory.snapshot("device")  # first load migrates
-    assert len(open("memory.txt").read()) <= 2200
+    assert len(open(memory.MEM_PATH).read()) <= 2200
     assert "entry-39" in snap  # newest kept
     assert "entry-00" not in snap  # oldest dropped first
     # legacy lines without '- ' prefix are preserved as entries
-    with open("memory.txt", "w") as f:
+    with open(memory.MEM_PATH, "w") as f:
         f.write("a legacy line without dash\n- a normal one\n")
     assert "a legacy line without dash" in memory.snapshot("device")
 
@@ -249,14 +250,14 @@ def test_approval_staging_approve(tmp_path, monkeypatch):
     r = memory.add("device", "staged fact")
     assert r["success"] and r.get("staged") and r.get("pending_id") == 1
     try:
-        staged_raw = open("memory.txt").read()
+        staged_raw = open(memory.MEM_PATH).read()
     except OSError:
         staged_raw = ""
     assert "staged fact" not in staged_raw  # not applied
     assert len(memory.list_pending()) == 1
     a = memory.approve(1)
     assert a["success"] and a["approved"] == [1]
-    assert "staged fact" in open("memory.txt").read()
+    assert "staged fact" in open(memory.MEM_PATH).read()
     assert memory.list_pending() == []
 
 
@@ -268,7 +269,7 @@ def test_approval_drift_refuse_and_reject(tmp_path, monkeypatch):
     assert r.get("staged"), r
     pid = r["pending_id"]
     # external drift: entry changes behind the staged write's back
-    with open("memory.txt", "w") as f:
+    with open(memory.MEM_PATH, "w") as f:
         f.write("- drift target v1 edited elsewhere\n")
     a = memory.approve(pid)
     assert a["success"] is False
@@ -284,7 +285,7 @@ def test_approval_off_applies_directly(tmp_path, monkeypatch):
     _enable_approval(False)
     r = memory.add("device", "direct fact")
     assert r["success"] and not r.get("staged")
-    assert "direct fact" in open("memory.txt").read()
+    assert "direct fact" in open(memory.MEM_PATH).read()
 
 
 # ---- compat tools ----

@@ -107,14 +107,14 @@ def test_search_hit_count_beats_recency(tmp_path, monkeypatch):
     assert r["results"][0]["score"] > r["results"][1]["score"]
 
 
-def test_search_case_insensitive_and_cross_rotation(tmp_path, monkeypatch):
+def test_search_case_insensitive_and_cross_session(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     assert agent_tools.appendChatLog("old fact about PARIS", "noted")
-    assert sessions.rotate()["rotated"] is True
+    sessions.new_session()
     assert agent_tools.appendChatLog("new chat about dogs", "woof")
     r = sessions.search("paris")
     assert r["success"] and r["count"] == 1
-    assert r["results"][0]["source"] == "chatlog.prev.jsonl"
+    assert r["results"][0]["source"].startswith("opt/data/sessions/")
     assert "PARIS" in r["results"][0]["content"]
 
 
@@ -153,11 +153,12 @@ def test_search_caps(tmp_path, monkeypatch):
 
 def test_search_missing_and_corrupt(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    assert not os.path.exists("chatlog.jsonl")
-    assert not os.path.exists("chatlog.prev.jsonl")
+    assert not os.path.exists("opt/data/chatlog.jsonl")
+    assert not os.path.exists("opt/data/chatlog.prev.jsonl")
     r = sessions.search("anything")
     assert r["success"] is True and r["count"] == 0
-    with open("chatlog.jsonl", "w") as f:
+    os.makedirs("opt/data", exist_ok=True)
+    with open("opt/data/chatlog.jsonl", "w") as f:
         f.write("not json at all\n")
         f.write('{"r": "user"}\n')  # missing content
         f.write('{"nope": 1}\n')
@@ -169,9 +170,9 @@ def test_search_missing_and_corrupt(tmp_path, monkeypatch):
     assert r3["success"] is False
 
 
-# ---- rotate ----
+# ---- new session (replaces the old destructive rotate) ----
 
-def test_rotate_preserves_memories_skills_pending(tmp_path, monkeypatch):
+def test_new_session_preserves_memories_skills_pending(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     assert memory.add("device", "device basil fact")["success"]
     assert memory.add("user", "user tea pref")["success"]
@@ -182,43 +183,59 @@ def test_rotate_preserves_memories_skills_pending(tmp_path, monkeypatch):
     assert st.get("staged")
     pr = skills.propose("draft", _body("draft summary"))
     assert pr.get("staged")
-    with open("chatlog.jsonl", "w") as f:
-        f.write(json.dumps({"r": "user", "c": "old turn"}) + "\n")
-    with open("chatlog.prev.jsonl", "w") as f:
-        f.write(json.dumps({"r": "user", "c": "ancient turn"}) + "\n")
-    r = sessions.rotate()
-    assert r["success"] is True and r["rotated"] is True
-    assert not os.path.exists("chatlog.jsonl")
-    with open("chatlog.prev.jsonl") as f:
-        prev = f.read()
-    assert "old turn" in prev and "ancient turn" not in prev  # old .prev replaced
+    assert agent_tools.appendChatLog("old turn", "old reply")
+    old_path = agent_tools.active_log_path()
+    sid = sessions.new_session()
+    assert sid and sessions.active_id() == sid
+    # The previous conversation is archived, NOT deleted (the old rotate()
+    # removed the .prev copy every time).
+    assert os.path.exists(old_path)
+    assert os.path.exists("opt/data/sessions/" + sessions.active_id() + ".jsonl") is False
     assert "device basil fact" in memory.snapshot("device")
     assert "user tea pref" in memory.snapshot("user")
     assert skills.view("demo")["success"] is True
     assert len(memory.list_pending()) == 1
     assert len(skills.list_pending()) == 1
+    # ...and it is still searchable from the new session.
+    r = sessions.search("old turn")
+    assert r["success"] and r["count"] == 1
 
 
-def test_rotate_empty_log(tmp_path, monkeypatch):
+def test_new_session_twice_keeps_both_conversations(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    assert not os.path.exists("chatlog.jsonl")
-    r = sessions.rotate()
-    assert r["success"] is True and r["rotated"] is False
+    assert agent_tools.appendChatLog("first convo", "a1")
+    p1 = agent_tools.active_log_path()
+    sessions.new_session()
+    assert agent_tools.appendChatLog("second convo", "a2")
+    p2 = agent_tools.active_log_path()
+    sessions.new_session()
+    # Pressing New Chat again must never destroy an archived conversation.
+    assert os.path.exists(p1) and os.path.exists(p2)
+    titles = [s["title"] for s in sessions.list_sessions()["sessions"]]
+    assert "first convo" in titles and "second convo" in titles
 
 
-def test_clear_log_api_now_rotates(tmp_path, monkeypatch):
+def test_new_session_on_empty_store(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    sid = sessions.new_session()
+    assert sid
+    assert sessions.active_id() == sid
+    # No file until the first turn: repeated New Chat cannot litter the store.
+    assert not os.path.exists("opt/data/sessions/" + sid + ".jsonl")
+    assert sessions.list_sessions()["count"] == 0
+
+
+def test_clear_log_api_starts_new_session(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     assert agent_tools.appendChatLog("remember me", "sure")
     assert agent_tools.appendMemoryFact("basil")
+    old_path = agent_tools.active_log_path()
     res = _request("post", "/api/memory", {"clear_log": True})
     assert res.status_code == 200
     assert res.json["cleared_log"] is True
-    # old assertion still holds: current log is gone (fresh empty session)...
-    assert not os.path.exists(agent_tools.LOG_PATH)
-    # ...but the turns survive one rotation back for search recall
-    assert os.path.exists("chatlog.prev.jsonl")
-    with open("chatlog.prev.jsonl") as f:
-        assert "remember me" in f.read()
+    assert res.json["session"] == sessions.active_id()
+    assert agent_tools.active_log_path() != old_path
+    assert os.path.exists(old_path)  # archived, not destroyed
     r = sessions.search("remember")
     assert r["count"] == 1
     # saved memory facts stay (the clear_log guarantee)
@@ -234,11 +251,12 @@ def test_journey_ordering_and_content(tmp_path, monkeypatch):
     _skills_approval(False)
     assert skills.create("jskill", _body("journey skill"))["success"]
     assert agent_tools.appendChatLog("journey q", "journey a")
+    chat_path = agent_tools.active_log_path()
     base = 1000000000
-    os.utime("memory.txt", (base, base))
-    os.utime("user.txt", (base + 100, base + 100))
-    os.utime("skills/jskill.md", (base + 200, base + 200))
-    os.utime("chatlog.jsonl", (base + 300, base + 300))
+    os.utime("opt/data/memory.txt", (base, base))
+    os.utime("opt/data/user.txt", (base + 100, base + 100))
+    os.utime("opt/data/skills/jskill.md", (base + 200, base + 200))
+    os.utime(chat_path, (base + 300, base + 300))
     j = sessions.journey()
     assert j["success"] is True
     evs = j["events"]
@@ -246,7 +264,7 @@ def test_journey_ordering_and_content(tmp_path, monkeypatch):
     assert mts == sorted(mts)  # ascending
     kinds = set(e["kind"] for e in evs)
     assert "memory" in kinds and "skill" in kinds and "log" in kinds
-    mem_ev = [e for e in evs if e.get("name") == "memory.txt"][0]
+    mem_ev = [e for e in evs if e.get("name") == "opt/data/memory.txt"][0]
     assert mem_ev["size"] > 0 and "%" in mem_ev["usage"]
     sk_ev = [e for e in evs if e.get("kind") == "skill"][0]
     assert sk_ev["name"] == "jskill" and sk_ev["size"] > 0
@@ -254,14 +272,14 @@ def test_journey_ordering_and_content(tmp_path, monkeypatch):
     # (skill events carry short name + full path — compare on path for them)
     ids = [(e.get("path") if e.get("kind") == "skill" else e.get("name")) for e in evs]
     names = [x for x in ids if x in
-             ("memory.txt", "user.txt", "skills/jskill.md", "chatlog.jsonl")]
-    assert names == ["memory.txt", "user.txt", "skills/jskill.md", "chatlog.jsonl"]
+             ("opt/data/memory.txt", "opt/data/user.txt", "opt/data/skills/jskill.md", chat_path)]
+    assert names == ["opt/data/memory.txt", "opt/data/user.txt", "opt/data/skills/jskill.md", chat_path]
 
 
 def test_journey_missing_files_never_crashes(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    assert not os.path.exists("memory.txt")
-    assert not os.path.exists("chatlog.jsonl")
+    assert not os.path.exists("opt/data/memory.txt")
+    assert not os.path.exists("opt/data/chatlog.jsonl")
     j = sessions.journey()
     assert j["success"] is True
     assert isinstance(j["events"], list)
@@ -296,15 +314,19 @@ def test_trajectory_pairs(tmp_path, monkeypatch):
     ]
 
 
-def test_trajectory_skips_unpaired_and_spans_rotation(tmp_path, monkeypatch):
+def test_trajectory_skips_unpaired_and_spans_sessions(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    with open("chatlog.prev.jsonl", "w") as f:
+    os.makedirs("opt/data/sessions", exist_ok=True)
+    with open("opt/data/sessions/w1.jsonl", "w") as f:
         f.write(json.dumps({"r": "user", "c": "prev q"}) + "\n")
         f.write(json.dumps({"r": "assistant", "c": "prev a"}) + "\n")
-    with open("chatlog.jsonl", "w") as f:
+    with open("opt/data/sessions/w2.jsonl", "w") as f:
         f.write(json.dumps({"r": "user", "c": "lonely q"}) + "\n")
         f.write(json.dumps({"r": "user", "c": "paired q"}) + "\n")
         f.write(json.dumps({"r": "assistant", "c": "paired a"}) + "\n")
+    base = 1000000000
+    os.utime("opt/data/sessions/w1.jsonl", (base, base))
+    os.utime("opt/data/sessions/w2.jsonl", (base + 10, base + 10))
     t = sessions.trajectory()
     assert t["pairs"] == 2
     assert t["conversations"][0] == {"from": "human", "value": "prev q"}

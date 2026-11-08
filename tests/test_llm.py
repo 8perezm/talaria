@@ -49,7 +49,7 @@ def test_tool_loop_single_call(tmp_path, monkeypatch):
     assert reply == "heap is fine"
     assert "get_status" in out["tools_used"]
     # persisted to log
-    assert os.path.exists("chatlog.jsonl")
+    assert os.path.exists(agent_tools.active_log_path())
 
 
 def test_tool_loop_disabled_tool(tmp_path, monkeypatch):

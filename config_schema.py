@@ -16,7 +16,7 @@
 # `group` is the sub-heading shown inside a category. `restart` marks values
 # that only take effect after a reboot (WiFi and discovery settings).
 
-CATEGORY_ORDER = ("agent", "fallback", "network", "chat", "security")
+CATEGORY_ORDER = ("agent", "fallback", "network", "chat", "theme", "security")
 
 CATEGORIES = {
     "agent": {
@@ -34,6 +34,10 @@ CATEGORIES = {
     "chat": {
         "label": "Chat",
         "description": "Conversation restore depth and rolling log budgets.",
+    },
+    "theme": {
+        "label": "Theme",
+        "description": "Color scheme, fonts and font sizes. Applies instantly, no restart.",
     },
     "security": {
         "label": "Security",
@@ -64,6 +68,28 @@ FLAT_TO_PATH = {
     "memory.write_approval": "security.memory_write_approval",
     "skills.write_approval": "security.skills_write_approval",
 }
+
+# Dashboard theme options. The option strings double as the Google Fonts
+# family names (spaces become + in the css2 URL) and as the scheme ids in
+# ui/src/lib/theme.ts — keep all three in sync.
+THEME_SCHEME_IDS = (
+    "talaria-dark", "midnight", "forest", "ember", "graphite",
+    "parchment", "glacier", "blush", "sandstone", "paper",
+)
+THEME_SYSTEM_FONT = "System Default"
+THEME_SANS_FONTS = (
+    "Inter", "Roboto", "Open Sans", "Lato", "Montserrat", "Poppins",
+    "Raleway", "Ubuntu", "Nunito", "Manrope", "DM Sans", "Work Sans",
+    "Fira Sans", "Rubik", "Outfit", "Space Grotesk", "IBM Plex Sans",
+    "Karla", "Heebo", "Cabin", "Barlow", "Lexend", "Mulish", "Source Sans 3",
+)
+THEME_MONO_FONTS = (
+    "Roboto Mono", "JetBrains Mono", "Fira Code", "Source Code Pro",
+    "IBM Plex Mono", "Inconsolata",
+)
+THEME_HEADERS_FONT_OPTIONS = (THEME_SYSTEM_FONT,) + THEME_SANS_FONTS
+THEME_BODY_FONT_OPTIONS = (THEME_SYSTEM_FONT,) + THEME_SANS_FONTS
+THEME_MONO_FONT_OPTIONS = (THEME_SYSTEM_FONT,) + THEME_MONO_FONTS
 
 FIELDS = [
     {
@@ -171,9 +197,9 @@ FIELDS = [
         "type": "string",
         "label": "mDNS hostname",
         "description": "Advertised as <name>.local on builds that support mDNS.",
-        "placeholder": "esp32-agent",
+        "placeholder": "talaria-agent",
         "restart": True,
-        "default": "esp32-agent",
+        "default": "talaria-agent",
     },
     {
         "key": "network.ap_ssid",
@@ -182,9 +208,9 @@ FIELDS = [
         "type": "string",
         "label": "Setup AP SSID",
         "description": "Fallback access point used when WiFi fails.",
-        "placeholder": "ESP32-Agent-Setup",
+        "placeholder": "Talaria-Agent-Setup",
         "restart": True,
-        "default": "ESP32-Agent-Setup",
+        "default": "Talaria-Agent-Setup",
     },
     {
         "key": "chat.entry_chars",
@@ -234,6 +260,86 @@ FIELDS = [
         "max": 4064,
         "step": 16,
         "default": 200,
+    },
+    {
+        "key": "theme.color_scheme",
+        "category": "theme",
+        "group": "Colors",
+        "type": "select",
+        "label": "Color scheme",
+        "description": "Five dark and five light schemes. Applies instantly.",
+        "options": list(THEME_SCHEME_IDS),
+        "default": "graphite",
+    },
+    {
+        "key": "theme.font_headers",
+        "category": "theme",
+        "group": "Fonts",
+        "type": "select",
+        "label": "Headers font",
+        "description": "Display font for page titles, panel titles, table "
+                       "headers, section labels and chat role labels. Google "
+                       "Fonts load on demand in the browser; System Default "
+                       "uses the built-in stack and works offline.",
+        "options": list(THEME_HEADERS_FONT_OPTIONS),
+        "default": "Poppins",
+    },
+    {
+        "key": "theme.font_headers_size",
+        "category": "theme",
+        "group": "Fonts",
+        "type": "number",
+        "label": "Headers size",
+        "description": "Pixel size for headings and panel titles.",
+        "min": 10,
+        "max": 32,
+        "step": 1,
+        "default": 15,
+    },
+    {
+        "key": "theme.font_body",
+        "category": "theme",
+        "group": "Fonts",
+        "type": "select",
+        "label": "Default font",
+        "description": "Body font for paragraphs, chat messages, buttons, "
+                       "inputs and table cells.",
+        "options": list(THEME_BODY_FONT_OPTIONS),
+        "default": "Space Grotesk",
+    },
+    {
+        "key": "theme.font_body_size",
+        "category": "theme",
+        "group": "Fonts",
+        "type": "number",
+        "label": "Default size",
+        "description": "Base pixel size; the whole layout scales with it.",
+        "min": 10,
+        "max": 24,
+        "step": 1,
+        "default": 15,
+    },
+    {
+        "key": "theme.font_mono",
+        "category": "theme",
+        "group": "Fonts",
+        "type": "select",
+        "label": "Terminal font",
+        "description": "Monospace font for code, logs and the file editor.",
+        "options": list(THEME_MONO_FONT_OPTIONS),
+        "default": "JetBrains Mono",
+    },
+    {
+        "key": "theme.font_mono_size",
+        "category": "theme",
+        "group": "Fonts",
+        "type": "number",
+        "label": "Terminal size",
+        "description": "Pixel size for code, logs and preformatted blocks.",
+        "min": 10,
+        "max": 24,
+        "step": 1,
+        "default": 13,
     },
     {
         "key": "security.auth_token",

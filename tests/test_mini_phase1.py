@@ -62,7 +62,7 @@ def test_tier_order_and_legacy_content(tmp_path, monkeypatch):
     i_vol = p.find("[volatile]")
     assert 0 <= i_stable < i_ctx < i_vol
     # all legacy content preserved verbatim
-    assert "You are ESP32-Agent" in p
+    assert "You are Talaria Agent" in p
     assert "Enabled device tools:" in p
     assert "get_status" in p
     assert "You have full general knowledge. Answer ordinary questions" in p

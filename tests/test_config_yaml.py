@@ -154,7 +154,7 @@ def test_raw_yaml_preserves_hand_comments(tmp_path, monkeypatch):
     config.saveConfig("HomeNet", "pass", "https://api.test/v1",
                       "sk-1234567890", "m")
     text = open("config.yaml").read()
-    text = text.replace("# Hermes Agent (micro) - configuration",
+    text = text.replace("# Talaria Agent (micro) - configuration",
                         "# my hand-written note")
     config.save_raw_yaml(text)
     assert "# my hand-written note" in open("config.yaml").read()

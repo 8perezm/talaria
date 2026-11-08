@@ -15,12 +15,15 @@ def clampIters(v, default=3):
     return n
 
 
-def runTurn(userMsg, history=None, out=None, max_iters=None):
+def runTurn(userMsg, history=None, out=None, max_iters=None, log_path=None):
     """Run one agentic turn. Returns the reply string (or 'ERROR: ...').
 
     max_iters caps tool-call rounds (default from config.agent_max_iters,
     clamped 1..5). max_iters=1 stops after the first tool round and returns
     the results-summary path from llm.py.
+
+    log_path is the conversation file this turn reads/writes (session for
+    web/Telegram, activity log for cron). None = the active session.
     """
     try:
         import delegate as _dlg
@@ -35,4 +38,5 @@ def runTurn(userMsg, history=None, out=None, max_iters=None):
         except Exception:
             max_iters = 3
     max_iters = clampIters(max_iters, 3)
-    return llm.callLLMWithTools(userMsg, history, out, max_iters)
+    return llm.callLLMWithTools(userMsg, history, out, max_iters,
+                                log_path=log_path)

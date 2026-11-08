@@ -64,9 +64,12 @@ def _run(args):
 
 TOOL = {
     "name": "write_file",
-    "ui_hint": "Write a workspace file (<=4KB, .bak checkpoint first)",
+    "ui_hint": "Write a workspace file under workspace/ (<=4KB, .bak first)",
     "description": ("Write a small workspace file (page, script, note): "
-                    "{path, content<=4096B}. A .bak checkpoint of the old "
+                    "{path, content<=4096B}. CREATE NEW FILES ONLY under "
+                    "opt/data/workspace/ (e.g. opt/data/workspace/hello.py, "
+                    "shown as /workspace/hello.py in Files) — never at the "
+                    "flash root. A .bak checkpoint of the old "
                     "file is kept first (rollback via POST /api/rollback). "
                     "Managed state (config, memory, logs, cron, skills) is "
                     "refused — each names its owning tool/flow. Read the "

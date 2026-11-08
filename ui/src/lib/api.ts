@@ -158,7 +158,7 @@ export const api = {
     request<T>(path, { method: 'POST', body, query }),
 }
 
-/* Field-visible request log (devtools: `__hermesNet`). Small and bounded —
+/* Field-visible request log (devtools: `__talariaNet`). Small and bounded —
    it is the fastest way to diagnose a stalled request on a device that has
    no console of its own. */
 interface Trace {
@@ -173,7 +173,7 @@ function noteStart(entry: Trace) {
   trace.push(entry)
   if (trace.length > 40) trace.shift()
   try {
-    ;(window as unknown as Record<string, unknown>).__hermesNet = trace
+    ;(window as unknown as Record<string, unknown>).__talariaNet = trace
   } catch {
     /* ignore */
   }
@@ -183,7 +183,7 @@ function noteRequest(entry: Trace) {
   if (trace.indexOf(entry) < 0) trace.push(entry)
   if (trace.length > 40) trace.shift()
   try {
-    ;(window as unknown as Record<string, unknown>).__hermesNet = trace
+    ;(window as unknown as Record<string, unknown>).__talariaNet = trace
   } catch {
     /* ignore */
   }
@@ -242,9 +242,29 @@ export interface ChatLogEntry {
 export interface MemoryResponse {
   memory?: string
   fs_ok?: boolean
+  /** Conversation these entries came from (opt/data/sessions/<id>.jsonl). */
+  session?: string
   log_bytes?: number
   log_tail?: ChatLogEntry[]
   clear_log?: boolean
+}
+
+export interface SessionRow {
+  id: string
+  title?: string
+  created?: number
+  bytes?: number
+  kind?: 'web' | 'telegram' | string
+  active?: boolean
+  empty?: boolean
+}
+
+export interface SessionsResponse {
+  success?: boolean
+  count?: number
+  total?: number
+  active?: string
+  sessions?: SessionRow[]
 }
 
 export interface ToolInfo {

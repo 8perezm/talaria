@@ -22,7 +22,7 @@ def test_registry_order_and_count(tmp_path, monkeypatch):
     names = [t["name"] for t in agent_tools.TOOL_REGISTRY]
     assert names == ["get_status", "gpio_write", "gpio_read", "adc_read", "wifi_scan",
                      "mem_save", "mem_read", "restart_device", "blink", "web_fetch",
-                     "memory", "skills_list", "skill_view", "session_search", "cron",
+                     "memory", "skills", "skill_view", "session_search", "cron",
                      "todo", "delegate_task", "exec_py",
                      "read_file", "write_file", "patch_file", "search_files"]
     assert agent_tools.all_tools_mask() == 0x3FFFFF

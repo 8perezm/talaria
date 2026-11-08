@@ -86,7 +86,7 @@ def test_system_prompt_falls_back_without_mini(tmp_path, monkeypatch):
         return real_import(name, *a, **k)
 
     monkeypatch.setattr(builtins, "__import__", _boom)
-    assert "ESP32-Agent" in server._system_prompt()
+    assert "Talaria Agent" in server._system_prompt()
 
 
 def test_stream_and_preview_wired_to_seam():
@@ -103,12 +103,12 @@ def test_stream_and_preview_wired_to_seam():
 def test_clear_user_flag(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     assert memory.add("user", "user wipe me")["success"]
-    assert os.path.exists("user.txt")
+    assert os.path.exists("opt/data/user.txt")
     res = _request("post", "/api/memory", {"clear_user": True})
     assert res.status_code == 200
     assert res.json.get("cleared_user") is True
     assert res.json.get("ok") is True
-    assert not os.path.exists("user.txt")
+    assert not os.path.exists("opt/data/user.txt")
     # device store untouched
     assert memory.add("device", "device stays")["success"]
     _request("post", "/api/memory", {"clear_user": True})

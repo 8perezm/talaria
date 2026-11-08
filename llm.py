@@ -581,7 +581,7 @@ def _body_with_model(reqBody, model):
 
 def _headers_for(api_key, stream=False):
     headers = {"Content-Type": "application/json",
-               "HTTP-Referer": "http://esp32-agent.local", "X-Title": "ESP32-Agent"}
+               "HTTP-Referer": "http://talaria-agent.local", "X-Title": "Talaria-Agent"}
     headers["Accept"] = "text/event-stream" if stream else "application/json"
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
@@ -656,13 +656,18 @@ def _msg_text(msg):
     return content, reason, rd
 
 
-def callLLMWithTools(userMsg, history=None, out=None, max_iters=None):
+def callLLMWithTools(userMsg, history=None, out=None, max_iters=None,
+                     log_path=None):
     """Agentic loop. Returns reply string (or 'ERROR: ...').
 
     out, if a dict, is filled with {'reasoning': str, 'tools_used': str}.
     max_iters caps the tool-call rounds (default from config.agent_max_iters,
     clamped 1..5). The system prompt is built ONCE per turn (frozen) and
     reused across iterations.
+
+    log_path names the conversation file this turn belongs to (a session for
+    web/Telegram, the activity log for cron). None keeps the legacy default
+    (agent_tools.LOG_PATH) so older callers and host tests are unaffected.
     """
     import config
     import agent_tools
@@ -694,7 +699,7 @@ def callLLMWithTools(userMsg, history=None, out=None, max_iters=None):
     # The browser sends its live transcript; the device log is the fallback
     # for a fresh page (refresh / another browser) so context survives.
     if not history:
-        agent_tools.injectRecentLog(msgs, userMsg, 8)
+        agent_tools.injectRecentLog(msgs, userMsg, 8, path=log_path)
     addHistoryCapped(msgs, history, 8)
     msgs.append({"role": "user", "content": userMsg[:1500]})
     agent_tools.addToolsArray(req)
@@ -854,7 +859,7 @@ def callLLMWithTools(userMsg, history=None, out=None, max_iters=None):
     if out is not None:
         out["reasoning"] = (finalReason or "")[:2500]
         out["tools_used"] = toolsLog
-    agent_tools.appendChatLog(userMsg, finalText)
+    agent_tools.appendChatLog(userMsg, finalText, path=log_path)
     if agent_tools.gRestartPending:
         pass  # caller reboots after response
     return finalText

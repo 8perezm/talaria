@@ -90,8 +90,9 @@ def _run(args):
 
 TOOL = {
     "name": "patch_file",
-    "ui_hint": "Patch one unique span of a file (.bak checkpoint first)",
-    "description": ("Patch one span of a workspace file: {path, old, new} "
+    "ui_hint": "Patch one unique span of a workspace/ file (.bak first)",
+    "description": ("Patch one span of a workspace file (opt/data/workspace/, "
+                    "shown as /workspace/ in Files): {path, old, new} "
                     "where old is a short substring occurring EXACTLY once "
                     "(read the file first, copy verbatim; widen the span "
                     "when told it is ambiguous). A .bak checkpoint is kept "

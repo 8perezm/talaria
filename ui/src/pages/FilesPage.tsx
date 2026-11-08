@@ -4,12 +4,14 @@ import { createPortal } from 'react-dom'
 import {
   ArrowUp,
   Download,
+  Eye,
   File,
   FileCode2,
   Folder,
   FolderOpen,
   FolderPlus,
   Loader2,
+  Pencil,
   RefreshCw,
   Save,
   Trash2,
@@ -17,6 +19,7 @@ import {
   X,
 } from 'lucide-react'
 import { api } from '@/lib/api'
+import { highlightToHtml, languageForPath } from '@/lib/highlight'
 import { bytes, cn } from '@/lib/utils'
 import { Button, Chip, Field, Modal, useConfirm, useToast } from '@/components/ui'
 
@@ -132,6 +135,7 @@ export function FilesPage() {
 
   const [editor, setEditor] = useState<{ path: string; content: string; size: number } | null>(null)
   const [editorBusy, setEditorBusy] = useState(false)
+  const [editorMode, setEditorMode] = useState<'view' | 'edit'>('view')
 
   const [sort, setSort] = useState<SortKey>('name')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
@@ -194,6 +198,7 @@ export function FilesPage() {
       const data = await api.get<FsContent>('/api/files/content', { path: entry.path })
       if (data.error) throw new Error(data.error)
       setEditor({ path: data.path, content: data.content, size: data.size })
+      setEditorMode('view')
     } catch (err) {
       push('err', err instanceof Error ? err.message : 'Read failed')
     } finally {
@@ -324,6 +329,14 @@ export function FilesPage() {
     setDraggingFiles(false)
     void upload(event.dataTransfer.files)
   }
+
+  const editorHtml = useMemo(
+    () => (editor ? highlightToHtml(editor.content, editor.path) : ''),
+    // Re-highlight only when a different file is opened or its text changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [editor?.path, editor?.content],
+  )
+  const editorLang = editor ? languageForPath(editor.path).label : ''
 
   return (
     <>
@@ -556,7 +569,8 @@ export function FilesPage() {
 
       {/* editor — micro-only affordance, opened from a file's name.
           Portaled to <body> so the shell's stacking context cannot put the
-          sidebar above it. */}
+          sidebar above it. View mode renders highlighted read-only code;
+          Edit mode is the plain textarea for changes (Ctrl+S saves). */}
       {editor &&
         createPortal(
           <div className="fixed inset-0 z-[70] flex flex-col bg-background-base animate-fade-in">
@@ -566,9 +580,44 @@ export function FilesPage() {
                 <span className="truncate font-mono-ui text-[0.8rem] text-midground">
                   {editor.path}
                 </span>
+                <Chip tone="muted">{editorLang}</Chip>
                 <Chip tone="muted">{bytes(editor.content.length)}</Chip>
               </div>
               <div className="flex items-center gap-1.5">
+                <div
+                  role="tablist"
+                  aria-label="File view mode"
+                  className="flex items-center border border-border"
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={editorMode === 'view'}
+                    onClick={() => setEditorMode('view')}
+                    className={cn(
+                      'flex items-center gap-1 px-2.5 py-1.5 text-[0.65rem] font-bold uppercase tracking-[0.12em] transition-colors',
+                      editorMode === 'view'
+                        ? 'bg-midground text-background-base'
+                        : 'text-text-secondary hover:text-midground',
+                    )}
+                  >
+                    <Eye className="h-3 w-3" /> View
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={editorMode === 'edit'}
+                    onClick={() => setEditorMode('edit')}
+                    className={cn(
+                      'flex items-center gap-1 px-2.5 py-1.5 text-[0.65rem] font-bold uppercase tracking-[0.12em] transition-colors',
+                      editorMode === 'edit'
+                        ? 'bg-midground text-background-base'
+                        : 'text-text-secondary hover:text-midground',
+                    )}
+                  >
+                    <Pencil className="h-3 w-3" /> Edit
+                  </button>
+                </div>
                 <Button variant="ghost" onClick={() => void load(path)}>
                   <RefreshCw className="h-3 w-3" /> Reload list
                 </Button>
@@ -580,20 +629,26 @@ export function FilesPage() {
                 </Button>
               </div>
             </div>
-            <textarea
-              value={editor.content}
-              onChange={(e) =>
-                setEditor((prev) => (prev ? { ...prev, content: e.target.value } : prev))
-              }
-              onKeyDown={(e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-                  e.preventDefault()
-                  void save()
+            {editorMode === 'view' ? (
+              <pre className="code-view min-h-0 flex-1 overflow-auto px-3 py-3 font-mono-ui text-[0.78rem] leading-relaxed">
+                <code dangerouslySetInnerHTML={{ __html: editorHtml }} />
+              </pre>
+            ) : (
+              <textarea
+                value={editor.content}
+                onChange={(e) =>
+                  setEditor((prev) => (prev ? { ...prev, content: e.target.value } : prev))
                 }
-              }}
-              spellCheck={false}
-              className="min-h-0 flex-1 resize-none bg-transparent px-3 py-3 font-mono-ui text-[0.78rem] leading-relaxed text-midground outline-none"
-            />
+                onKeyDown={(e) => {
+                  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+                    e.preventDefault()
+                    void save()
+                  }
+                }}
+                spellCheck={false}
+                className="min-h-0 flex-1 resize-none bg-transparent px-3 py-3 font-mono-ui text-[0.78rem] leading-relaxed text-midground outline-none"
+              />
+            )}
           </div>,
           document.body,
         )}

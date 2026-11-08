@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router'
 import { Shell } from '@/components/Shell'
+import { ThemeApplier } from '@/components/ThemeApplier'
 import { ToastProvider } from '@/components/ui'
 import { AppDataProvider } from '@/lib/app-data'
 import { ChatPage } from '@/pages/ChatPage'
@@ -14,6 +15,7 @@ import { ToolsPage } from '@/pages/ToolsPage'
 import { ChannelsPage } from '@/pages/ChannelsPage'
 import { ConfigPage } from '@/pages/ConfigPage'
 import { KeysPage } from '@/pages/KeysPage'
+import { LoginPage } from '@/pages/LoginPage'
 import { SystemPage } from '@/pages/SystemPage'
 import { DocsPage } from '@/pages/DocsPage'
 import { SetupPage } from '@/pages/SetupPage'
@@ -31,6 +33,7 @@ export default function App() {
   return (
     <ToastProvider>
       <AppDataProvider>
+        <ThemeApplier />
         <Shell>
           <Routes>
             <Route path="/" element={<ChatPage />} />
@@ -45,6 +48,7 @@ export default function App() {
             <Route path="/channels" element={<ChannelsPage />} />
             <Route path="/config" element={<ConfigPage />} />
             <Route path="/keys" element={<KeysPage />} />
+            <Route path="/login" element={<LoginPage />} />
             <Route path="/system" element={<SystemPage />} />
             <Route path="/docs" element={<DocsPage />} />
             <Route path="/setup" element={<SetupPage />} />

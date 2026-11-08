@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import {
   ArrowUp,
   ChevronDown,
   Cpu,
-  Eraser,
   Lock,
+  Plus,
   Sparkles,
   Terminal,
   Wrench,
@@ -34,6 +34,8 @@ const SUGGESTIONS = [
   'Turn on the LED on GPIO 2',
   'Read the temperature on ADC pin 4',
   'Write a haiku about microcontrollers',
+  'Create a skill that reads the temperature sensor',
+  'Create a cron job that reports free heap every hour',
 ]
 
 let turnSeq = 0
@@ -42,8 +44,11 @@ export function ChatPage() {
   const { status, config, authed, refreshStatus } = useAppData()
   const { push } = useToast()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const urlSession = searchParams.get('session') || ''
 
   const [turns, setTurns] = useState<Turn[]>([])
+  const [sessionId, setSessionId] = useState('')
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [models, setModels] = useState<string[]>([])
@@ -54,7 +59,11 @@ export function ChatPage() {
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
-  /* ---- restore transcript from the device chat log ---- */
+  /* ---- restore transcript from the device session store ----
+     `?session=<id>` opens (and activates) that conversation — this is how a
+     row on the Sessions page resumes, and how a reload keeps its place.
+     No param = whatever the device has active; the resolved id is then put
+     in the URL so refreshing or sharing the link lands on the same session. */
   useEffect(() => {
     if (!authed || restored) return
     let cancelled = false
@@ -63,8 +72,16 @@ export function ChatPage() {
         // No explicit tail: the device returns the configured number of
         // turns (Config -> Chat history, default 20 = 40 log lines) using a
         // chunked read of the rolling log.
-        const mem = await api.get<MemoryResponse>('/api/memory')
+        const qs = urlSession
+          ? `?session=${encodeURIComponent(urlSession)}&activate=1`
+          : '?activate=1'
+        const mem = await api.get<MemoryResponse>('/api/memory' + qs)
         if (cancelled) return
+        const sid = typeof mem.session === 'string' ? mem.session : ''
+        if (sid) {
+          setSessionId(sid)
+          if (!urlSession) setSearchParams({ session: sid }, { replace: true })
+        }
         const tail = Array.isArray(mem.log_tail) ? mem.log_tail : []
         const restoredTurns: Turn[] = []
         for (const entry of tail) {
@@ -82,7 +99,15 @@ export function ChatPage() {
     return () => {
       cancelled = true
     }
-  }, [authed, restored])
+  }, [authed, restored, urlSession, setSearchParams])
+
+  /* A link/history change that swaps only the `?session=` value (same route)
+     must reload the transcript; React Router does not remount for that. */
+  useEffect(() => {
+    if (!urlSession || urlSession === sessionId) return
+    setTurns([])
+    setRestored(false)
+  }, [urlSession, sessionId])
 
   /* ---- model list: fetched lazily when the picker opens ----
      /api/models reaches out to the provider over TLS from the device and can
@@ -158,7 +183,7 @@ export function ChatPage() {
             Accept: 'text/event-stream',
             ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
           },
-          body: JSON.stringify({ message, history }),
+          body: JSON.stringify({ message, history, session: sessionId }),
           signal: controller.signal,
         })
 
@@ -215,7 +240,7 @@ export function ChatPage() {
             tools_used?: string
             reasoning?: string
             error?: string
-          }>('/api/chat', { message, history })
+          }>('/api/chat', { message, history, session: sessionId })
           if (out.error) throw new Error(out.error)
           finish({
             text: out.reply || '',
@@ -245,20 +270,27 @@ export function ChatPage() {
         inputRef.current?.focus()
       }
     },
-    [authed, busy, history, patchTurn, push, refreshStatus],
+    [authed, busy, history, patchTurn, push, refreshStatus, sessionId],
   )
 
   const stop = () => {
     abortRef.current?.abort()
   }
 
-  const clear = async () => {
+  /* New Chat = new conversation. The device creates the session id and
+     points its active pointer at it; the file appears with the first turn. */
+  const newChat = async () => {
     try {
-      await api.post('/api/memory', { clear_log: true })
+      const res = await api.post<{ session?: string }>('/api/sessions', {})
+      const sid = typeof res.session === 'string' ? res.session : ''
+      abortRef.current?.abort()
       setTurns([])
-      push('ok', 'Conversation cleared')
+      if (sid) {
+        setSessionId(sid)
+        setSearchParams({ session: sid }, { replace: true })
+      }
     } catch (err) {
-      push('err', err instanceof Error ? err.message : 'Clear failed')
+      push('err', err instanceof Error ? err.message : 'New chat failed')
     }
   }
 
@@ -282,9 +314,9 @@ export function ChatPage() {
           Dashboard locked
         </p>
         <p className="max-w-sm text-[0.82rem] leading-relaxed text-text-tertiary">
-          This agent requires an auth token. Unlock it from the Keys page, or paste it below.
+          Sign in as admin with the device password to continue.
         </p>
-        <Button onClick={() => navigate('/keys')}>Go to Keys</Button>
+        <Button onClick={() => navigate('/login')}>Go to Login</Button>
       </div>
     )
   }
@@ -374,9 +406,15 @@ export function ChatPage() {
             )}
           </div>
 
-          <Button variant="ghost" size="sm" onClick={() => void clear()} title="Clear conversation">
-            <Eraser className="h-3 w-3" />
-            Clear
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => void newChat()}
+            disabled={busy}
+            title="Start a new conversation"
+          >
+            <Plus className="h-3 w-3" />
+            New Chat
           </Button>
         </div>
       </div>
@@ -387,7 +425,7 @@ export function ChatPage() {
           <div className="mx-auto flex h-full max-w-3xl flex-col items-center justify-center gap-4 px-4 py-10 text-center">
             <div className="flex items-center gap-2 text-midground">
               <Sparkles className="h-4 w-4" />
-              <span className="label-display text-[0.78rem] tracking-[0.18em]">Hermes Agent</span>
+              <span className="label-display text-[0.78rem] tracking-[0.18em]">Talaria Agent</span>
             </div>
             <p className="max-w-md text-[0.86rem] leading-relaxed text-text-tertiary">
               A micro agent running on an ESP32-S3. Ask it something, or let it reach for the

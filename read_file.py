@@ -53,7 +53,8 @@ def _run(args):
 TOOL = {
     "name": "read_file",
     "ui_hint": "Read a workspace file in slices (max 4KB per read)",
-    "description": ("Read a workspace file (code, pages, logs) in slices: "
+    "description": ("Read a workspace file (opt/data/workspace/, shown as "
+                    "/workspace/ in Files: code, pages, logs) in slices: "
                     "{path, offset=0, limit=2048, max 4096}. Returns "
                     "{content, size, truncated} — page large files with "
                     "offset. Secrets (config.yaml, config.json, tg.json) and partial "

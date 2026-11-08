@@ -1,4 +1,7 @@
 # MicroPython device state - never commit live settings/memory/secrets
+# /opt/data is the device data home (sessions, activity, memory, skills,
+# workspace, cron, tokens) - ignore the whole tree, not just sessions.
+opt/
 config.yaml
 config.yaml.tmp
 config.json
@@ -8,12 +11,16 @@ memory.txt
 user.txt
 chatlog.jsonl
 chatlog*.jsonl
+activity.jsonl
+activity.prev.jsonl
+opt/data/sessions/
 cron.json
 bundles.json
 pending_mem.json
 pending_skills/
 tg.json
 *.tmp
+*.bak
 
 # CPython test / editor artifacts
 __pycache__/

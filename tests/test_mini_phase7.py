@@ -72,6 +72,39 @@ def _multipart(field, filename, data, boundary="BOUND7"):
     return out, "multipart/form-data; boundary=" + boundary
 
 
+def test_files_locked_to_data_home(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    _write("server.py", "SYSTEM")
+    res = _request("get", "/api/files")
+    assert res.status_code == 200, res.status_code
+    assert res.json["path"] == "/opt/data"
+    assert res.json["parent"] is None
+    # /server.py through Files means opt/data/server.py, never flash server.py.
+    res = _request("get", "/api/files/content?path=/server.py")
+    assert res.status_code == 404, res.status_code
+    res = _request("post", "/api/files/save",
+                   {"path": "/server.py", "content": "DATA"})
+    assert res.status_code == 200, res.status_code
+    assert res.json["path"] == "/opt/data/server.py"
+    assert _read("server.py") == b"SYSTEM"
+    assert _read("opt/data/server.py") == b"DATA"
+
+
+def test_system_hatch_reaches_flash(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    _write("server.py", "SYSTEM")
+    res = _request("get", "/api/system/files")
+    assert res.status_code == 200, res.status_code
+    assert res.json["path"] == "/"
+    assert any(e["name"] == "server.py" for e in res.json["entries"])
+    res = _request("get", "/api/system/files/content?path=/server.py")
+    assert res.status_code == 200, res.status_code
+    assert res.json["content"] == "SYSTEM"
+    res = _request("post", "/api/system/files/save",
+                   {"path": "/note.txt", "content": "hello"})
+    assert res.status_code == 200 and res.json["path"] == "/note.txt"
+
+
 def _write(rel, data):
     with open(os.path.join(str(fsutil._FS_ROOT), rel), "wb") as f:
         if isinstance(data, str):
@@ -305,6 +338,7 @@ def test_server_save_creates_bak(tmp_path, monkeypatch):
     res = _request("post", "/api/files/save",
                    {"path": "/note.txt", "content": "one"})
     assert res.status_code == 200 and res.json["ok"] is True
+    assert res.json["path"] == "/opt/data/note.txt"
     res = _request("post", "/api/files/save",
                    {"path": "/note.txt", "content": "two"})
     assert res.status_code == 200
@@ -322,7 +356,7 @@ def test_server_upload_creates_bak(tmp_path, monkeypatch):
     body, ctype = _multipart("file", "up.txt", b"v2")
     res = _request("post", "/api/files/upload?path=/", raw=body, ctype=ctype)
     assert res.status_code == 200 and res.json["ok"] is True
-    assert res.json["saved"] == ["/up.txt"]
+    assert res.json["saved"] == ["/opt/data/up.txt"]
     res = _request("get", "/api/files/content?path=/up.txt.bak")
     assert res.status_code == 200 and res.json["content"] == "v1"
 
@@ -335,8 +369,8 @@ def test_api_rollback_list_and_restore(tmp_path, monkeypatch):
     _request("post", "/api/files/save", {"path": "/rb.txt", "content": "two"})
     res = _request("get", "/api/rollback")
     assert res.status_code == 200 and res.json["count"] == 1
-    assert res.json["backups"][0]["path"] == "/rb.txt.bak"
-    res = _request("post", "/api/rollback", {"path": "/rb.txt"})
+    assert res.json["backups"][0]["path"] == "/opt/data/rb.txt.bak"
+    res = _request("post", "/api/rollback", {"path": "/opt/data/rb.txt"})
     assert res.status_code == 200 and res.json["ok"] is True
     res = _request("get", "/api/files/content?path=/rb.txt")
     assert res.json["content"] == "one"
