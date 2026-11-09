@@ -59,25 +59,38 @@ subscription. It is built and tested on the **ESP32-S3 N16R8** board
 
 ```powershell
 # 1) Flash MicroPython once (match the COM port + the .bin you downloaded):
-esptool --chip esp32s3 --port COM11 erase_flash
-esptool --chip esp32s3 --port COM11 write_flash -z 0 ESP32_GENERIC_S3-SPIRAM_OCT-*.bin
+esptool --chip esp32s3 --port COM11 --baud 460800 erase_flash
+esptool --chip esp32s3 --port COM11 --baud 460800 write_flash -z 0 ESP32_GENERIC_S3-SPIRAM_OCT-*.bin
 
 # 2) Install the Microdot web library onto the board (once).
-#    Copy these four files from
+#    Download these four files from
 #    https://raw.githubusercontent.com/miguelgrinberg/microdot/main/src/microdot/
-#    (__init__.py, microdot.py, multipart.py, helpers.py)
-#    into /lib/microdot/ on the device, e.g.:
+#    (__init__.py, microdot.py, multipart.py, helpers.py), then make room
+#    for them — mpremote will not create missing folders by itself
+#    (ignore "already exists" errors if you repeat this):
+python -m mpremote connect COM11 exec "import os; os.mkdir('lib')"
+python -m mpremote connect COM11 exec "import os; os.mkdir('lib/microdot')"
+python -m mpremote connect COM11 cp __init__.py :/lib/microdot/__init__.py
 python -m mpremote connect COM11 cp microdot.py :/lib/microdot/microdot.py
+python -m mpremote connect COM11 cp multipart.py :/lib/microdot/multipart.py
+python -m mpremote connect COM11 cp helpers.py :/lib/microdot/helpers.py
 
 # 3) Build the dashboard and deploy everything:
 cd ui; npm install; npm run build; cd ..
-powershell -File deploy.ps1 -Port COM11
+powershell -ExecutionPolicy Bypass -File deploy.ps1 -Port COM11
+# (Stock Windows blocks unsigned scripts, hence Bypass for this one run.
+#  If COM11 is wrong, re-check Device Manager — port numbers move around.)
 
-# 4) Watch the boot log and note the IP:
-python -m mpremote connect COM11 reset
+# 4) Watch the boot log and note the IP. Attach FIRST, then reset, because
+#    the banner prints ~2s after reset and you would otherwise miss it:
 python -m mpremote connect COM11 repl
+# ...now press the physical RESET button on the board...
 # expect: === Agent boot ===, then WiFi OK: 192.168.x.x
 #         or AP started: Talaria-Agent-Setup
+
+# 5) Reboot once more before opening the browser — attaching the REPL stops
+#    the server, and it stays down until a reset:
+#    (exit the REPL, then:) python -m mpremote connect COM11 reset
 ```
 
 Then open `http://<IP>/` in your browser. On a fresh device, join the
