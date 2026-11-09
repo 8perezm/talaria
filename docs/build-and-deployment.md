@@ -131,7 +131,8 @@ Easy install points at:
   whatever is committed. Every push to `main` auto-tags the next version
   from the HEAD commit message (`major:`/`BREAKING CHANGE:` → major,
   `feat:`/`feature:`/`minor:` → minor, anything else → patch; taken tags
-  are skipped) and pushes the tag, which starts the release run. Tag pushes
+  are skipped) and publishes the release in the SAME run (a tag push made
+  with `GITHUB_TOKEN` cannot start new runs, by GitHub design). Tag pushes
   skip the auto-tag step, so there is no loop. The manual **Bump version**
   workflow remains for explicit jumps (e.g. cutting `v1.0.0`). Watch the
-  triggered tag run and sanity-check the published SHA256.
+  run and sanity-check the published SHA256.

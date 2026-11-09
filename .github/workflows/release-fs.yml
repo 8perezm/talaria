@@ -13,9 +13,11 @@
 #      littlefs format family the board reads) and comparing every file by
 #      name AND bytes. (`mklittlefs -l` is NOT used for this: its listing
 #      display mangles nested paths even though the image is correct.)
-#   5. On tags (v*): publishes talaria-fs-<tag>.bin + SHA256 as a Release with
-#      the 3-command esptool install. Other builds upload the image as a
-#      workflow artifact for inspection (no release).
+#   5. Branch pushes auto-tag the next semver from the commit message, and the
+#      SAME run publishes talaria-fs-<tag>.bin + SHA256 as a Release (a tag
+#      push made with GITHUB_TOKEN cannot start a new run by GitHub design,
+#      so no second run is relied on). Tag pushes (manual) skip auto-tag and
+#      build + publish directly.
 #
 # Install from a release (esptool only, no Python/mpremote/npm needed):
 #   esptool --chip esp32s3 --port COM11 --baud 460800 erase_flash
@@ -60,8 +62,11 @@ jobs:
 
       - name: Auto-tag release version
         # Branch pushes only — tag-triggered runs skip this, so there is no
-        # loop. The tag push starts a second run that builds + publishes.
+        # loop. NOTE: this push uses GITHUB_TOKEN, which never triggers new
+        # runs by design, so the release is published by THIS run below
+        # (see Publish step) instead of relying on a second tag run.
         if: github.ref_type == 'branch'
+        id: autotag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -92,8 +97,15 @@ jobs:
             fi
           done
           echo "Commit calls for a $PART bump ($LAST -> $NEXT)"
-          git tag "$NEXT"
-          git push origin "$NEXT"
+          PUSHED=""
+          for _ in 1 2 3; do
+            git tag "$NEXT" 2>/dev/null || true
+            if git push origin "$NEXT"; then PUSHED=1; break; fi
+            git fetch --tags --force -q
+            PATCH=$((PATCH + 1)); NEXT="v$MAJOR.$MINOR.$PATCH"
+          done
+          if [ -z "$PUSHED" ]; then echo "tag push failed"; exit 1; fi
+          echo "tag=$NEXT" >> "$GITHUB_OUTPUT"
 
       - name: Stage device tree
         run: |
@@ -126,12 +138,23 @@ jobs:
           pip install littlefs-python
           python3 scripts/verify_fs_image.py talaria-fs.bin staging
 
-      - name: Name + checksum release files
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Resolve release tag
+        # Tag runs release their own tag; branch runs release the auto-tag.
+        id: rel
+        if: github.ref_type == 'tag' || steps.autotag.outputs.tag != ''
         run: |
-          cp talaria-fs.bin "talaria-fs-${GITHUB_REF_NAME}.bin"
-          sha256sum "talaria-fs-${GITHUB_REF_NAME}.bin" > "talaria-fs-${GITHUB_REF_NAME}.bin.sha256"
-          cat "talaria-fs-${GITHUB_REF_NAME}.bin.sha256"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ steps.autotag.outputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Name + checksum release files
+        if: steps.rel.outputs.tag != ''
+        run: |
+          cp talaria-fs.bin "talaria-fs-${{ steps.rel.outputs.tag }}.bin"
+          sha256sum "talaria-fs-${{ steps.rel.outputs.tag }}.bin" > "talaria-fs-${{ steps.rel.outputs.tag }}.bin.sha256"
+          cat "talaria-fs-${{ steps.rel.outputs.tag }}.bin.sha256"
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v7
@@ -141,22 +164,23 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.rel.outputs.tag != ''
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.rel.outputs.tag }}
           files: |
             talaria-fs-v*.bin
             talaria-fs-v*.bin.sha256
           generate_release_notes: false
           body: |
-            Prebuilt flash filesystem for Talaria Agent (`${{ github.ref_name }}`).
+            Prebuilt flash filesystem for Talaria Agent (`${{ steps.rel.outputs.tag }}`).
 
             No Python, mpremote, or npm needed — esptool only:
 
             ```
             esptool --chip esp32s3 --port COM11 --baud 460800 erase_flash
             esptool --chip esp32s3 --port COM11 --baud 460800 write_flash -z 0 ESP32_GENERIC_S3-SPIRAM_OCT-<ver>.bin
-            esptool --chip esp32s3 --port COM11 --baud 460800 write_flash 0x200000 talaria-fs-${{ github.ref_name }}.bin
+            esptool --chip esp32s3 --port COM11 --baud 460800 write_flash 0x200000 talaria-fs-${{ steps.rel.outputs.tag }}.bin
             ```
 
             - `ESP32_GENERIC_S3-SPIRAM_OCT-*.bin`: MicroPython for ESP32-S3 with octal PSRAM, from https://micropython.org/download/ESP32_GENERIC_S3 (flash at offset `0`).
