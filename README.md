@@ -1,6 +1,6 @@
-# Talaria Agent
-
 <p align="center"><img src="docs/assets/talaria-agent.jpg" width="800" alt="Talaria Agent"/></p>
+
+# Talaria Agent
 
 > Your own AI assistant running on a microcontroller — chat, remember, automate, and control hardware from a browser dashboard.
 
