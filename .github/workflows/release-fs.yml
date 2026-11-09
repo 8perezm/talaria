@@ -42,6 +42,8 @@ jobs:
     steps:
       - name: Check out repo
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # full history + tags for auto-versioning
 
       - name: Set up Node
         uses: actions/setup-node@v6
@@ -55,6 +57,43 @@ jobs:
           cd ui
           npm ci
           npm run build
+
+      - name: Auto-tag release version
+        # Branch pushes only — tag-triggered runs skip this, so there is no
+        # loop. The tag push starts a second run that builds + publishes.
+        if: github.ref_type == 'branch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch --tags --force
+          MSG=$(git log -1 --pretty=%B)
+          if echo "$MSG" | grep -qE 'BREAKING CHANGE:|^major(\([^)]*\))?:'; then
+            PART=major
+          elif echo "$MSG" | grep -qE '^feat(\([^)]*\))?:|^feature(\([^)]*\))?:|^minor(\([^)]*\))?:'; then
+            PART=minor
+          else
+            PART=patch
+          fi
+          LAST=$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null || echo v0.0.0)
+          VER=${LAST#v}
+          MAJOR=${VER%%.*}; REST=${VER#*.}
+          MINOR=${REST%%.*}; PATCH=${REST#*.}
+          case "$PART" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            *) PATCH=$((PATCH + 1)) ;;
+          esac
+          NEXT="v$MAJOR.$MINOR.$PATCH"
+          for _ in 1 2 3; do
+            if git ls-remote --tags origin "refs/tags/$NEXT" | grep -q "refs/tags/$NEXT$"; then
+              PATCH=$((PATCH + 1)); NEXT="v$MAJOR.$MINOR.$PATCH"
+            else
+              break
+            fi
+          done
+          echo "Commit calls for a $PART bump ($LAST -> $NEXT)"
+          git tag "$NEXT"
+          git push origin "$NEXT"
 
       - name: Stage device tree
         run: |

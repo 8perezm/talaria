@@ -127,9 +127,11 @@ Easy install points at:
   `0xE00000` (read from a live board via `esp32.Partition`; matches
   `/api/stats` `fs_total`). If MicroPython ever changes its S3 partition
   layout, these constants (`env.FS_SIZE`/`FS_OFFSET`) must move with it.
-- Before cutting a release, `pytest tests/ -q` must be green — the image
-  bakes in whatever is committed. To cut one, run the **Bump version**
-  workflow (Actions tab → pick major/minor/patch): it tags the next version
-  from the last `v*` tag, which triggers the release job above. Manual
-  equivalent: `git tag vX.Y.Z && git push origin vX.Y.Z`. Either way, watch
-  the workflow run and sanity-check the published SHA256.
+- Before pushing, `pytest tests/ -q` must be green — the image bakes in
+  whatever is committed. Every push to `main` auto-tags the next version
+  from the HEAD commit message (`major:`/`BREAKING CHANGE:` → major,
+  `feat:`/`feature:`/`minor:` → minor, anything else → patch; taken tags
+  are skipped) and pushes the tag, which starts the release run. Tag pushes
+  skip the auto-tag step, so there is no loop. The manual **Bump version**
+  workflow remains for explicit jumps (e.g. cutting `v1.0.0`). Watch the
+  triggered tag run and sanity-check the published SHA256.
