@@ -9,7 +9,10 @@
 #   3. Packs it with mklittlefs (built from source) into a 14 MB image for the
 #      MicroPython `vfs` partition (flash offset 0x200000, size 0xE00000 —
 #      read from the board via esp32.Partition; matches /api/stats fs_total).
-#   4. Verifies every staged file is in the image with the same size.
+#   4. Verifies by mounting the image with littlefs-python (the same
+#      littlefs format family the board reads) and comparing every file by
+#      name AND bytes. (`mklittlefs -l` is NOT used for this: its listing
+#      display mangles nested paths even though the image is correct.)
 #   5. On tags (v*): publishes talaria-fs-<tag>.bin + SHA256 as a Release with
 #      the 3-command esptool install. Other builds upload the image as a
 #      workflow artifact for inspection (no release).
@@ -81,7 +84,8 @@ jobs:
 
       - name: Verify image contents against staging
         run: |
-          python3 scripts/verify_fs_image.py ./mklittlefs/mklittlefs talaria-fs.bin staging
+          pip install littlefs-python
+          python3 scripts/verify_fs_image.py talaria-fs.bin staging
 
       - name: Name + checksum release files
         if: startsWith(github.ref, 'refs/tags/v')

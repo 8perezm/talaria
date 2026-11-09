@@ -117,9 +117,12 @@ Easy install points at:
   exact tree `deploy.ps1` ships (`/main.py`, `/boot.py`, `/app/*`, `/www/*`,
   `/lib/microdot/*` — microdot fetched from the same raw URLs as the manual
   step; no `config.yaml`, no `/opt/data`), packs it with a from-source
-  `mklittlefs` build (`-s 14680064 -b 4096 -p 256`), and checks every staged
-  file against the image listing (`scripts/verify_fs_image.py`, pinned by
-  `tests/test_verify_fs_image.py`).
+  `mklittlefs` build (`-s 14680064 -b 4096 -p 256`), and mounts the result
+  with littlefs-python — the same format family the board reads — comparing
+  every file by name and bytes (`scripts/verify_fs_image.py`, pinned by
+  `tests/test_verify_fs_image.py`). `mklittlefs -l` is deliberately not used
+  for verification: its listing display mangles nested paths while the image
+  itself is correct.
 - The image targets the MicroPython `vfs` partition: offset `0x200000`, size
   `0xE00000` (read from a live board via `esp32.Partition`; matches
   `/api/stats` `fs_total`). If MicroPython ever changes its S3 partition
