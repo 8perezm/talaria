@@ -125,6 +125,8 @@ Easy install points at:
   `/api/stats` `fs_total`). If MicroPython ever changes its S3 partition
   layout, these constants (`env.FS_SIZE`/`FS_OFFSET`) must move with it.
 - Before cutting a release, `pytest tests/ -q` must be green — the image
-  bakes in whatever is committed. To cut one: `git tag vX.Y.Z &&
-  git push origin vX.Y.Z`, then watch the workflow run and sanity-check the
-  published SHA256.
+  bakes in whatever is committed. To cut one, run the **Bump version**
+  workflow (Actions tab → pick major/minor/patch): it tags the next version
+  from the last `v*` tag, which triggers the release job above. Manual
+  equivalent: `git tag vX.Y.Z && git push origin vX.Y.Z`. Either way, watch
+  the workflow run and sanity-check the published SHA256.

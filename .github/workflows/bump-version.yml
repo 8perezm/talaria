@@ -1,0 +1,53 @@
+# One-click versioned releases: compute the next semver tag from the last
+# `v*` tag and push it, which triggers the Filesystem image workflow to
+# build, verify, and publish the release.
+#
+# Why manual trigger instead of auto-tag on every push: each tag publishes a
+# flash image users install on hardware, so releases stay deliberate and can
+# be bench-tested first. No package.json is touched — the tag IS the version.
+#
+# Usage: Actions tab -> "Bump version" -> Run workflow -> pick major/minor/patch.
+name: Bump version
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Semver part to increment from the latest v* tag"
+        required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo with tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute next version and push tag
+        run: |
+          last=$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null || echo v0.0.0)
+          echo "Latest tag: $last"
+          ver=${last#v}
+          major=${ver%%.*}; rest=${ver#*.}; minor=${rest%%.*}; patch=${rest#*.}
+          case "${{ inputs.bump }}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            *) patch=$((patch + 1)) ;;
+          esac
+          next="v$major.$minor.$patch"
+          echo "Next version: $next"
+          git tag "$next"
+          git push origin "$next"
