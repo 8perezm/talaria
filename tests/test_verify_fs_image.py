@@ -31,6 +31,16 @@ def test_parse_skips_headers_and_dirs():
     assert vfi.parse_listing(text) == {"app/a.py": 10}
 
 
+def test_parse_real_ci_shape_with_dates_and_dir_rows():
+    text = ("<dir>\t/app\tMon Nov 09 01:31:40 2026\n"
+            "100\t/app/server.py\tMon Nov 09 01:31:40 2026\n"
+            "<dir>\t/app/tools\tMon Nov 09 01:31:40 2026\n"
+            "7\t/app/tools/registry.py\tMon Nov 09 01:31:40 2026\n"
+            "8\t/main.py\tMon Nov 09 01:31:40 2026\n")
+    assert vfi.parse_listing(text) == {
+        "app/server.py": 100, "app/tools/registry.py": 7, "main.py": 8}
+
+
 def test_staging_files_sizes(tmp_path):
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "a.py").write_bytes(b"12345")

@@ -10,29 +10,32 @@ conventions for pure helpers where practical).
 """
 
 import os
-import re
 import subprocess
 import sys
 
 
 def parse_listing(text):
-    """Return {posix_path: size} from `mklittlefs -l` output."""
+    """Return {posix_path: size} from `mklittlefs -l` output.
+
+    Real line shapes (tabs shown as spaces):
+      100 TAB /app/server.py TAB Mon Nov 09 01:31:40 2026
+      <dir> TAB /app TAB Mon Nov 09 01:31:40 2026
+    i.e. size-first file rows with a trailing date, and <dir> rows that must
+    be skipped outright (the trailing year would otherwise parse as a file
+    with a bogus size, and the dir itself is not in the staging file set).
+    """
     got = {}
     for raw in text.splitlines():
         line = raw.strip()
-        if not line or line.endswith("/"):
-            continue  # blank or directory entry
-        if re.search(r"[a-zA-Z]", line) and not re.search(r"\d", line):
-            continue  # header line with no digits at all
-        parts = line.split()
-        if len(parts) < 2:
+        if not line or line.startswith("<dir>"):
             continue
-        if parts[0].isdigit() and not parts[-1].isdigit():
-            size, name = int(parts[0]), " ".join(parts[1:])
-        elif parts[-1].isdigit() and not parts[0].isdigit():
-            size, name = int(parts[-1]), " ".join(parts[:-1])
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].isdigit():
+            size, name = int(parts[0]), parts[1]
+        elif len(parts) == 2 and parts[1].isdigit():
+            name, size = parts[0], int(parts[1])
         else:
-            continue  # ambiguous line (e.g. a header) — skip
+            continue  # header or unparseable line — skip
         name = name.strip().lstrip("./").lstrip("/")
         if name:
             got[name] = size
