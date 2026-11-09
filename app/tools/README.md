@@ -1,16 +1,16 @@
 # Tools — one module per function
 
-Copy `_template.py.sample` to `tools/tool_mything.py`, fill in the 3 marked
-spots, add one line to `tools/registry.py`. Done.
+Copy `_template.py.sample` to `app/tools/tool_mything.py`, fill in the 3 marked
+spots, add one line to `app/tools/registry.py`. Done.
 
 ## Files
 
 | File | What |
 |------|------|
-| `tools/tool_api.md` (this doc) | `TOOL` dict contract (`name`, `ui_hint`, `description`, `parameters`, `run`, `max_result_chars`). |
-| `tools/registry.py` | Ordered list of tools. **Append-only** — order = bit in `tools_mask` (saved `/functions` toggles). |
-| `tools/tool_*.py` | One tool each: `TOOL = {...}` with schema + `run(args)` executor. |
-| `tools/_template.py.sample` | Starter, not imported (`.sample` so nothing loads it). |
+| `app/tools/README.md` (this doc) | `TOOL` dict contract (`name`, `ui_hint`, `description`, `parameters`, `run`, `max_result_chars`). |
+| `app/tools/registry.py` | Ordered list of tools. **Append-only** — order = bit in `tools_mask` (saved `/functions` toggles). |
+| `app/tools/tool_*.py` | One tool each: `TOOL = {...}` with schema + `run(args)` executor. |
+| `app/tools/_template.py.sample` | Starter, not imported (`.sample` so nothing loads it). |
 
 ## TOOL contract
 
@@ -31,15 +31,15 @@ TOOL = {
 
 ## Add a tool
 
-1. Copy template to `tools/tool_mything.py`.
+1. Copy template to `app/tools/tool_mything.py`.
 2. Set name, schema, run logic.
-3. `tools/registry.py`: add `from tools.tool_mything import TOOL as Tool_mything` + append `Tool_mything` at the END.
+3. `app/tools/registry.py`: add `from tools.tool_mything import TOOL as Tool_mything` + append `Tool_mything` at the END.
 4. Deploy + toggle on `/functions`.
 5. (Optional) add a row to `docs/agent-tools.md` catalogue in the C++ repo.
 
 ## Edit a tool
 
-Just open its `tools/tool_*.py` — schema and behavior live together. Shared
+Just open its `app/tools/tool_*.py` — schema and behavior live together. Shared
 policy (`pinCanWrite()` etc. in `agent_tools.py`) stays put.
 
 ## Limits

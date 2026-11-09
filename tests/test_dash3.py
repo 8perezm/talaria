@@ -125,7 +125,7 @@ def test_stats_counters_reset_on_boot_semantics():
     assert s["tool_calls"] == {}
     assert s["last_chat_ms"] == 0
     assert s["last_upstream_ms"] is None
-    src = open(os.path.join(BASE, "server.py"), encoding="utf-8").read()
+    src = open(os.path.join(BASE, "app", "server.py"), encoding="utf-8").read()
     assert "reset on" in src.lower() and "boot" in src.lower()
 
 

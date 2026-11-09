@@ -48,7 +48,7 @@ cd ui; npm install; npm run build; cd ..
 powershell -File deploy.ps1 -Port COM11
 ```
 
-`deploy.ps1` copies all application files plus `tools/` and the dashboard
+`deploy.ps1` copies `app/` (including `app/tools/`) and the dashboard
 bundle (`www/index.html`, `favicon.svg`, `assets/app.js(.gz)`,
 `assets/app.css(.gz)`), size-verifying each (`os.stat(...)[6]` == local size),
 then reboots and waits for `http://<device>/api/status`. Flags: `-Build`
@@ -57,8 +57,8 @@ then reboots and waits for `http://<device>/api/status`. Flags: `-Build`
 ### Incremental deploy (day-to-day)
 
 ```powershell
-python scripts/esp_deploy.py server.py llm.py tools/tool_web_fetch.py --reset
-python scripts/esp_deploy.py --verify-only server.py llm.py
+python scripts/esp_deploy.py app/server.py app/llm.py app/tools/tool_web_fetch.py --reset
+python scripts/esp_deploy.py --verify-only app/server.py app/llm.py
 ```
 
 One invocation uploads N files (`LOCAL[:REMOTE]` specs) with a single batched
@@ -90,10 +90,10 @@ Expect `200` with `free_heap` ≈ 8 000 000 and a real model reply in ~2–4 s.
   `../www/`, prebuilds the `.gz` twins (MicroPython cannot gzip at request
   time — the twins cut first paint from ~7 s to ~2 s), and stamps
   `index.html` with a cache-busted `?v=<hash>`.
-- Serving: `server.py` serves exactly `index.html`, `favicon.svg`, and
+- Serving: `app/server.py` serves exactly `index.html`, `favicon.svg`, and
   `assets/*` from `www/`, preferring `.gz` when the client accepts gzip; every
   other non-`/api` path falls through to the SPA shell via the catch-all
-  `@app.get("/<path:path>")` registered **last** (`server.py:3689`) so it can
+  `@app.get("/<path:path>")` registered **last** (`app/server.py:3689`) so it can
   never swallow an API route.
 - Cable-free UI push: `POST /api/ui/asset?path=assets/app.js` (raw body,
   ≤900 KB, auth required). For a ~430 KB bundle, `mpremote cp` is the more

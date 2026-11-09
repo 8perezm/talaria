@@ -90,7 +90,7 @@ def test_system_prompt_falls_back_without_mini(tmp_path, monkeypatch):
 
 
 def test_stream_and_preview_wired_to_seam():
-    src = open(os.path.join(BASE, "server.py"), encoding="utf-8").read()
+    src = open(os.path.join(BASE, "app", "server.py"), encoding="utf-8").read()
     assert "_system_prompt()" in src
     # SSE stream path builds once per request via the seam (frozen-per-turn)
     assert "Phase 9" in src
@@ -254,5 +254,5 @@ def test_zero_native_dialogs():
 # ---- 7. micropython portability ----
 
 def test_no_regex_or_bad_codecs_in_new_code():
-    src = open(os.path.join(BASE, "server.py"), encoding="utf-8").read()
+    src = open(os.path.join(BASE, "app", "server.py"), encoding="utf-8").read()
     assert "iso-8859-1" not in src and "latin-1" not in src

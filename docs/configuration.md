@@ -15,7 +15,7 @@ through a schema-driven form plus a raw-YAML view.
 | `chat` | `entry_chars` (500–20000, default 4000), `restore_turns` (1–60, default 20), `log_max_kb` (64–4096, default 320), `log_keep_kb` (default 200, must leave 32 KB headroom) | Per-message retention, transcript restore depth, rolling-log rotation budget. |
 | `theme` | `color_scheme`, `font_headers(+_size)`, `font_body(+_size)`, `font_mono(+_size)` | Dashboard look. Browser-applied, no restart. |
 | `security` | `auth_token`, `memory_write_approval` (default off), `skills_write_approval` (default on) | Dashboard token + agent write-approval toggles. |
-| `tools` | `mask` | Bitmask of enabled tools (bit = index in `tools/registry.py`; managed on the Tools page). |
+| `tools` | `mask` | Bitmask of enabled tools (bit = index in `app/tools/registry.py`; managed on the Tools page). |
 
 Minimal example:
 
@@ -72,7 +72,7 @@ security:
 - Optional device token (`security.auth_token`). When set (and not in AP setup
   mode), every `/api/*` and `/update` call needs
   `Authorization: Bearer <token>` or `X-Auth-Token: <token>`
-  (`server.py:1442-1472`). Setup paths (`/setup`, `/wifi`, `/update` page)
+  (`app/server.py:1442-1472`). Setup paths (`/setup`, `/wifi`, `/update` page)
   never redirect to login.
 - Login page (`/login`): fixed username `admin`, password = auth token.
   `POST /api/login` is a stateless verifier — no cookies/sessions on the MCU;

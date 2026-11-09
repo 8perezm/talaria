@@ -19,11 +19,11 @@ How Talaria Agent fits together on the ESP32-S3: stack, boot sequence, request f
 - **State:** user data lives under `/opt/data/` (sessions, memory, skills, cron,
   workspace). See [Project Structure](./project-structure.md).
 
-## Boot sequence (`main.py` + `boot.py` + `net.py`)
+## Boot sequence (`main.py` + `boot.py` + `app/net.py`)
 
 1. `boot.py` runs first: enables GC, raises the GC threshold for PSRAM boards.
 2. `main.py` prints `=== Agent boot ===`, imports `config`, `agent_tools` and the
-   tool registry (`tools/registry.py:register_into_agent_tools`), then
+   tool registry (`app/tools/registry.py:register_into_agent_tools`), then
    `config.loadConfig()` and `agent_tools.initAgentFS()`.
 3. `net.connectWiFi(15000)` (`net.py:22`) tries the configured station network.
    - Success: keeps STA up, `ensure_dns()` (falls back to `8.8.8.8` if the LAN
@@ -44,7 +44,7 @@ How Talaria Agent fits together on the ESP32-S3: stack, boot sequence, request f
 ## Request / data flow
 
 ```
-Browser (SPA) ──Bearer/X-Auth-Token──▶ Microdot (server.py, :80)
+Browser (SPA) ──Bearer/X-Auth-Token──▶ Microdot (`app/server.py`, :80)
                                           │  ├── /api/* JSON handlers
                                           │  └── /<path:path> catch-all → www/index.html
                                           ▼
@@ -61,24 +61,24 @@ Browser (SPA) ──Bearer/X-Auth-Token──▶ Microdot (server.py, :80)
 ```
 
 - **Chat:** `POST /api/chat` runs the full agentic loop server-side
-  (`server.py:2133`, `agent_core.runTurn`). `POST /api/chat-stream`
-  (`server.py:2214`) streams `data: {"delta"}` / `{"reasoning"}` events and
+  (`app/server.py:2133`, `agent_core.runTurn`). `POST /api/chat-stream`
+  (`app/server.py:2214`) streams `data: {"delta"}` / `{"reasoning"}` events and
   emits `{"need_tools":true}` + `[DONE]` when the browser must fall back to
-  `/api/chat` for the tool loop. `/api/debug-raw` (`server.py:2086`) is the
+  `/api/chat` for the tool loop. `/api/debug-raw` (`app/server.py:2086`) is the
   no-tools path for isolating upstream problems.
 - **Auth:** every `/api/*` route (except `/api/auth`, `/api/login`, setup
   pages) checks `is_authenticated()` — `Authorization: Bearer <token>` or
-  `X-Auth-Token: <token>` (`server.py:1456-1472`). Auth is disabled while in AP
-  setup mode (`server.py:1442-1445`). The login page is a stateless verifier:
-  fixed username `admin`, password = device auth token (`server.py:70,1703`).
+  `X-Auth-Token: <token>` (`app/server.py:1456-1472`). Auth is disabled while in AP
+  setup mode (`app/server.py:1442-1445`). The login page is a stateless verifier:
+  fixed username `admin`, password = device auth token (`app/server.py:70,1703`).
 - **Config writes:** form saves (`POST /api/config/form`) and raw YAML saves
   (`POST /api/config/yaml`) go through `config.save_form()` / `save_raw_yaml()`,
   which normalize against `config_schema.py`, write `config.yaml` atomically
   (temp file + rename), and refresh the module globals. Network changes return
   `restart_required: true`. Secrets stay masked (`****`) unless revealed.
-- **Files:** `GET/POST /api/files*` (`server.py:2878-3171`) is locked to the
+- **Files:** `GET/POST /api/files*` (`app/server.py:2878-3171`) is locked to the
   `/opt/data` user-data home. `GET/POST /api/system/files*`
-  (`server.py:3173-3351`) is the separate full-flash surface (code + `www/`),
+  (`app/server.py:3173-3351`) is the separate full-flash surface (code + `www/`),
   with the same caps (100 KB read / 200 KB write) and `.bak` checkpoints.
 - **Memory model:** each conversation is one append-only JSONL file under
   `opt/data/sessions/` plus `active.json` pointing at the web UI's current one
@@ -92,17 +92,17 @@ Browser (SPA) ──Bearer/X-Auth-Token──▶ Microdot (server.py, :80)
 
 | File | Role |
 |---|---|
-| `main.py` / `boot.py` | Boot, background tasks, self-restarting server loop |
-| `server.py` | All HTTP routes (~70 handlers), auth, SPA + gzip static serving, `/update` |
-| `agent_core.py` / `agent_tools.py` | Tool loop, system prompt, chat-log + memory helpers, tool enable mask |
-| `llm.py` | Raw-socket OpenAI bridge, fallback provider, buffered + streaming paths |
-| `tools/registry.py` | The 22-tool registry (index = bit in `tools_mask`; append-only) |
-| `config.py` / `config_schema.py` / `yamlish.py` | Settings load/save/migrate, single field registry, YAML subset |
-| `net.py` | STA/AP switching, wildcard DNS captive portal, NTP, DNS fallback |
-| `sessions.py` / `memory.py` / `skillstore.py` | Conversations, long-term memory, skills (+ approval queues) |
-| `cron.py` / `todo.py` / `delegate.py` | Scheduled turns (optional script step), task list, subagent delegation |
-| `gateway.py` | Telegram pairing + polling |
-| `fsutil.py` / `logbuf.py` | Block-wise JSONL readers, ring-buffer console log for `/api/logs` |
-| `exec_py.py`, `read_file.py`, `write_file.py`, `patch_file.py`, `search_files.py` | Workspace file tools used by the agent |
-| `providers.py` / `prompt.py` / `checkpoint.py` | Model catalogue helpers, prompt text, file rollback snapshots |
+| `main.py` / `boot.py` | The only files at the filesystem root. Boot (+ `/app` on `sys.path`), background tasks, self-restarting server loop |
+| `app/server.py` | All HTTP routes (~70 handlers), auth, SPA + gzip static serving, `/update` |
+| `app/agent_core.py` / `app/agent_tools.py` | Tool loop, system prompt, chat-log + memory helpers, tool enable mask |
+| `app/llm.py` | Raw-socket OpenAI bridge, fallback provider, buffered + streaming paths |
+| `app/tools/registry.py` | The 22-tool registry (index = bit in `tools_mask`; append-only) |
+| `app/config.py` / `app/config_schema.py` / `app/yamlish.py` | Settings load/save/migrate, single field registry, YAML subset |
+| `app/net.py` | STA/AP switching, wildcard DNS captive portal, NTP, DNS fallback |
+| `app/sessions.py` / `app/memory.py` / `app/skillstore.py` | Conversations, long-term memory, skills (+ approval queues) |
+| `app/cron.py` / `app/todo.py` / `app/delegate.py` | Scheduled turns (optional script step), task list, subagent delegation |
+| `app/gateway.py` | Telegram pairing + polling |
+| `app/fsutil.py` / `app/logbuf.py` | Block-wise JSONL readers, ring-buffer console log for `/api/logs` |
+| `app/exec_py.py`, `app/read_file.py`, `app/write_file.py`, `app/patch_file.py`, `app/search_files.py` | Workspace file tools used by the agent |
+| `app/providers.py` / `app/prompt.py` / `app/checkpoint.py` | Model catalogue helpers, prompt text, file rollback snapshots |
 | `ui/` → `www/` | Dashboard source → device-served bundle (see [Build & Deployment](./build-and-deployment.md)) |

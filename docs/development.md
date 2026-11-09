@@ -40,10 +40,10 @@ Run this after every edit. Conventions:
 Batch uploads into one CLI invocation (one tool call per batch, not per file):
 
 ```powershell
-python scripts/esp_deploy.py server.py llm.py --reset
+python scripts/esp_deploy.py app/server.py app/llm.py --reset
 python scripts/esp_deploy.py www/assets/app.js www/index.html --reset
-python scripts/esp_deploy.py --verify-only server.py llm.py
-python scripts/esp_deploy.py --raw server.py llm.py --reset   # fallback path
+python scripts/esp_deploy.py --verify-only app/server.py app/llm.py
+python scripts/esp_deploy.py --raw app/server.py app/llm.py --reset   # fallback path
 ```
 
 - Specs are `LOCAL[:REMOTE]` (remote defaults to the repo-relative path).
@@ -81,9 +81,9 @@ python scripts/esp_deploy.py --raw server.py llm.py --reset   # fallback path
 - **RAM discipline:** never `f.read()` an unbounded file — use the block-wise
   readers in `fsutil.py` (`read_jsonl_tail`, chunked rotation copies). One
   16 KB-block reader pattern keeps RAM flat regardless of log size.
-- **Tool registry:** add tools by copying `tools/_template.py.sample`,
+- **Tool registry:** add tools by copying `app/tools/_template.py.sample`,
   filling the 3 spots, and appending to `TOOL_REGISTRY` in
-  `tools/registry.py` — END only, never reorder (index = bit in `tools_mask`).
+  `app/tools/registry.py` — END only, never reorder (index = bit in `tools_mask`).
 - **No blocking calls on the server path:** use the existing timeouts
   (15–45 s), keep `/api/models` lazy (fetch on picker open, never at page
   start), and keep `MAX_CONCURRENT = 1` in `ui/src/lib/api.ts` (the ESP32's

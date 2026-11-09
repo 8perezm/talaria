@@ -6,11 +6,11 @@ device sizes are read back over the same link and compared to the local
 sizes.  An echoed "cp ok" proves nothing — only SIZE equality passes.
 
 Usage (run from the repo root):
-    python scripts/esp_deploy.py server.py llm.py
+    python scripts/esp_deploy.py app/server.py app/llm.py
     python scripts/esp_deploy.py www/assets/app.js www/index.html --reset
-    python scripts/esp_deploy.py --verify-only server.py llm.py --reset
-    python scripts/esp_deploy.py --raw server.py llm.py --reset
-    python scripts/esp_deploy.py --port COM11 --reset server.py
+    python scripts/esp_deploy.py --verify-only app/server.py app/llm.py --reset
+    python scripts/esp_deploy.py --raw app/server.py app/llm.py --reset
+    python scripts/esp_deploy.py --port COM11 --reset app/server.py
 
 Spec format: LOCAL[:REMOTE].  REMOTE defaults to the repo-relative local
 path with forward slashes (www\\assets\\app.js -> www/assets/app.js).

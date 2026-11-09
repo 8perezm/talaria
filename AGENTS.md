@@ -104,7 +104,7 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   `SSLSocket`; calling `.settimeout()` on it raises
   `'SSLSocket' object has no attribute 'settimeout'`. Set the timeout on the
   plain socket *before* wrapping and guard any call afterwards
-  (`tools/tool_web_fetch.py`, `llm.streamChat`).
+  (`app/tools/tool_web_fetch.py`, `llm.streamChat`).
 - **NTP / clock epoch:** there is no NTP sync by default — the RTC boots at
   **2000-01-01** and mbedTLS will not handshake against it. `net.syncTime()`
   runs at boot right after `net.ensure_dns()` and prints `[ntp] time synced:
@@ -124,7 +124,7 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
 - **Upload with `scripts/esp_deploy.py`, not bare `mpremote cp` loops.**
   One CLI invocation copies N files and verifies every one, so the agent
   spends one tool call per batch instead of one per file:
-  `python scripts/esp_deploy.py server.py llm.py tools/tool_x.py --reset`.
+  `python scripts/esp_deploy.py app/server.py app/llm.py app/tools/tool_x.py --reset`.
   Specs are `LOCAL[:REMOTE]` (remote defaults to the repo-relative path);
   `--verify-only` compares device sizes to local without copying;
   `--raw` uses a single raw-serial session (base64 chunks) instead of

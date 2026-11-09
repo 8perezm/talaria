@@ -391,8 +391,9 @@ def test_restriction_filters_dispatch_and_prompt(tmp_path, monkeypatch):
 
 def test_no_regex_or_bad_codecs_in_new_code():
     base = os.path.join(os.path.dirname(__file__), "..")
-    for rel in ("todo.py", "delegate.py", "exec_py.py", "agent_core.py",
-                "agent_tools.py", "config.py"):
+    for rel in (os.path.join("app", "todo.py"), os.path.join("app", "delegate.py"),
+                os.path.join("app", "exec_py.py"), os.path.join("app", "agent_core.py"),
+                os.path.join("app", "agent_tools.py"), os.path.join("app", "config.py")):
         src = open(os.path.join(base, rel), encoding="utf-8").read()
         assert "import re" not in src, "no `re` in %s" % rel
         for codec in ("iso-8859-1", "latin-1", "cp1252", "utf-16"):

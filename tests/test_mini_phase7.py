@@ -458,8 +458,9 @@ def test_server_wrappers_share_fsutil(tmp_path, monkeypatch):
 
 def test_no_regex_or_bad_codecs_in_new_code():
     base = os.path.join(os.path.dirname(__file__), "..")
-    for rel in ("fsutil.py", "checkpoint.py", "read_file.py", "write_file.py",
-                "patch_file.py", "search_files.py"):
+    for rel in (os.path.join("app", "fsutil.py"), os.path.join("app", "checkpoint.py"),
+                os.path.join("app", "read_file.py"), os.path.join("app", "write_file.py"),
+                os.path.join("app", "patch_file.py"), os.path.join("app", "search_files.py")):
         src = open(os.path.join(base, rel), encoding="utf-8").read()
         assert "import re" not in src, "no `re` in %s" % rel
         for codec in ("iso-8859-1", "latin-1", "cp1252", "utf-16"):

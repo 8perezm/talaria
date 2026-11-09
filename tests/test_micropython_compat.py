@@ -22,7 +22,7 @@ def test_no_unsupported_codecs_in_source():
     The TLS layer was failing first, so the bug stayed hidden until the
     firmware was fixed. Guard the source against re-introduction.
     """
-    src = open(os.path.join(os.path.dirname(__file__), "..", "llm.py"),
+    src = open(os.path.join(os.path.dirname(__file__), "..", "app", "llm.py"),
                encoding="utf-8").read()
     # Ignore comments: the fix documents the codec by name.
     code_lines = [ln for ln in src.splitlines()
@@ -34,6 +34,6 @@ def test_no_unsupported_codecs_in_source():
 
 def test_content_length_parsed_from_bytes():
     """Header parsing must work on bytes (no decode) — see comment above."""
-    src = open(os.path.join(os.path.dirname(__file__), "..", "llm.py"),
+    src = open(os.path.join(os.path.dirname(__file__), "..", "app", "llm.py"),
                encoding="utf-8").read()
     assert 'b"content-length:"' in src.lower()

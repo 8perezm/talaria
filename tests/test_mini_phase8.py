@@ -502,7 +502,8 @@ def test_main_tg_poller_wiring():
 
 def test_no_regex_or_bad_codecs_in_new_code():
     base = os.path.join(os.path.dirname(__file__), "..")
-    for rel in ("gateway.py", "main.py", "cron.py"):
+    for rel in (os.path.join("app", "gateway.py"), "main.py",
+                os.path.join("app", "cron.py")):
         src = open(os.path.join(base, rel), encoding="utf-8").read()
         for ln in src.splitlines():
             s = ln.strip()

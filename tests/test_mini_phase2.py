@@ -389,7 +389,8 @@ def test_api_memory_pending_ops(tmp_path, monkeypatch):
 # ---- micropython portability ----
 
 def test_no_regex_in_new_code():
-    for rel in ("memory.py", os.path.join("tools", "tool_memory.py")):
+    for rel in (os.path.join("app", "memory.py"),
+              os.path.join("app", "tools", "tool_memory.py")):
         src = open(os.path.join(os.path.dirname(__file__), "..", rel), encoding="utf-8").read()
         assert "import re" not in src
         assert "iso-8859-1" not in src and "latin-1" not in src

@@ -1,5 +1,12 @@
 # main.py — boot. Runs on the ESP32 (MicroPython runs main.py at power-on).
-# Mirrors src/main.cpp: config -> fs -> wifi/AP -> mdns -> routes -> serve.
+# Only boot.py and main.py stay at the filesystem root; the application lives
+# in /app, so it goes on sys.path before anything else is imported.
+import sys
+try:
+    if "/app" not in sys.path:
+        sys.path.insert(0, "/app")
+except Exception:
+    pass
 try:
     import logbuf
     logbuf.install()  # mirror serial print() into the /api/logs ring buffer

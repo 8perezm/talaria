@@ -356,7 +356,8 @@ def test_main_cron_loop_wiring():
 
 def test_no_regex_or_bad_codecs_in_new_code():
     base = os.path.join(os.path.dirname(__file__), "..")
-    for rel in ("cron.py", os.path.join("tools", "tool_cron.py")):
+    for rel in (os.path.join("app", "cron.py"),
+                os.path.join("app", "tools", "tool_cron.py")):
         src = open(os.path.join(base, rel), encoding="utf-8").read()
         assert "import re" not in src
         for codec in ("iso-8859-1", "latin-1", "cp1252", "utf-16"):
