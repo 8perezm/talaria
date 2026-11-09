@@ -1,0 +1,121 @@
+# Build + verify the prebuilt flash filesystem image, and attach it to a
+# GitHub Release on tag pushes.
+#
+# What it does:
+#   1. Builds the dashboard (ui/ -> www/) so the bundle always matches source.
+#   2. Stages the exact device tree deploy.ps1 ships:
+#        /main.py /boot.py /app/* /www/* /lib/microdot/*
+#      (no config.yaml, no /opt/data — device state is created at first boot)
+#   3. Packs it with mklittlefs (built from source) into a 14 MB image for the
+#      MicroPython `vfs` partition (flash offset 0x200000, size 0xE00000 —
+#      read from the board via esp32.Partition; matches /api/stats fs_total).
+#   4. Verifies every staged file is in the image with the same size.
+#   5. On tags (v*): publishes talaria-fs-<tag>.bin + SHA256 as a Release with
+#      the 3-command esptool install. Other builds upload the image as a
+#      workflow artifact for inspection (no release).
+#
+# Install from a release (esptool only, no Python/mpremote/npm needed):
+#   esptool --chip esp32s3 --port COM11 --baud 460800 erase_flash
+#   esptool --chip esp32s3 --port COM11 --baud 460800 write_flash -z 0 ESP32_GENERIC_S3-SPIRAM_OCT-<ver>.bin
+#   esptool --chip esp32s3 --port COM11 --baud 460800 write_flash 0x200000 talaria-fs-vX.Y.Z.bin
+name: Filesystem image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FS_SIZE: "14680064" # 0xE00000 — vfs partition size on 16 MB flash boards
+  FS_OFFSET: "0x200000" # vfs partition address (esp32.Partition, label 'vfs')
+
+jobs:
+  build-fs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Build dashboard bundle (ui/ -> www/)
+        run: |
+          cd ui
+          npm ci
+          npm run build
+
+      - name: Stage device tree
+        run: |
+          rm -rf staging
+          mkdir -p staging/app/tools staging/www/assets staging/lib/microdot
+          cp main.py boot.py staging/
+          cp app/*.py staging/app/
+          cp app/tools/*.py app/tools/*.sample app/tools/README.md staging/app/tools/
+          cp www/index.html www/favicon.svg staging/www/
+          cp www/assets/app.js www/assets/app.css www/assets/app.js.gz www/assets/app.css.gz staging/www/assets/
+          for f in __init__.py microdot.py multipart.py helpers.py; do
+            curl -fsSL "https://raw.githubusercontent.com/miguelgrinberg/microdot/main/src/microdot/$f" -o "staging/lib/microdot/$f"
+          done
+          echo "--- staged tree ---"
+          (cd staging && find . -type f | sort)
+
+      - name: Build mklittlefs from source
+        run: |
+          git clone --depth 1 https://github.com/earlephilhower/mklittlefs.git
+          make -C mklittlefs -j"$(nproc)"
+          ls mklittlefs/mklittlefs
+
+      - name: Pack filesystem image
+        run: |
+          ./mklittlefs/mklittlefs -c staging -s "$FS_SIZE" -b 4096 -p 256 talaria-fs.bin
+          ls -l talaria-fs.bin
+
+      - name: Verify image contents against staging
+        run: |
+          python3 scripts/verify_fs_image.py ./mklittlefs/mklittlefs talaria-fs.bin staging
+
+      - name: Name + checksum release files
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          cp talaria-fs.bin "talaria-fs-${GITHUB_REF_NAME}.bin"
+          sha256sum "talaria-fs-${GITHUB_REF_NAME}.bin" > "talaria-fs-${GITHUB_REF_NAME}.bin.sha256"
+          cat "talaria-fs-${GITHUB_REF_NAME}.bin.sha256"
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: talaria-fs
+          path: talaria-fs.bin
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            talaria-fs-v*.bin
+            talaria-fs-v*.bin.sha256
+          generate_release_notes: false
+          body: |
+            Prebuilt flash filesystem for Talaria Agent (`${{ github.ref_name }}`).
+
+            No Python, mpremote, or npm needed — esptool only:
+
+            ```
+            esptool --chip esp32s3 --port COM11 --baud 460800 erase_flash
+            esptool --chip esp32s3 --port COM11 --baud 460800 write_flash -z 0 ESP32_GENERIC_S3-SPIRAM_OCT-<ver>.bin
+            esptool --chip esp32s3 --port COM11 --baud 460800 write_flash 0x200000 talaria-fs-${{ github.ref_name }}.bin
+            ```
+
+            - `ESP32_GENERIC_S3-SPIRAM_OCT-*.bin`: MicroPython for ESP32-S3 with octal PSRAM, from https://micropython.org/download/ESP32_GENERIC_S3 (flash at offset `0`).
+            - `talaria-fs-*.bin` (this asset): `/main.py`, `/boot.py`, `/app/*`, `/www/*`, `/lib/microdot/*` packed with littlefs for the `vfs` partition (offset `0x200000`, size 14 MB). First boot creates the open `Talaria-Agent-Setup` network — join it and the setup page walks you through WiFi + provider.
+            - Verify the download: `sha256sum talaria-fs-*.bin` against `talaria-fs-*.bin.sha256` below (generated at release time).

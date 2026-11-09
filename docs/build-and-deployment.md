@@ -103,3 +103,28 @@ Expect `200` with `free_heap` ≈ 8 000 000 and a real model reply in ~2–4 s.
   files into `www/`/`www/assets/`, refuses device state (`config.yaml`,
   memory, sessions, cron, …), then reboots. MicroPython itself is only ever
   flashed over USB (step 1).
+
+## Filesystem image releases
+
+`.github/workflows/release-fs.yml` builds the prebuilt image the README's
+Easy install points at:
+
+- Pushes to `main` (and manual dispatches) build + verify the image and keep
+  it as a workflow artifact — no release.
+- Pushing a `v*` tag builds, verifies, and publishes
+  `talaria-fs-<tag>.bin` + `.sha256` as a GitHub Release with install notes.
+- The job rebuilds the dashboard (`npm ci` + `npm run build`), stages the
+  exact tree `deploy.ps1` ships (`/main.py`, `/boot.py`, `/app/*`, `/www/*`,
+  `/lib/microdot/*` — microdot fetched from the same raw URLs as the manual
+  step; no `config.yaml`, no `/opt/data`), packs it with a from-source
+  `mklittlefs` build (`-s 14680064 -b 4096 -p 256`), and checks every staged
+  file against the image listing (`scripts/verify_fs_image.py`, pinned by
+  `tests/test_verify_fs_image.py`).
+- The image targets the MicroPython `vfs` partition: offset `0x200000`, size
+  `0xE00000` (read from a live board via `esp32.Partition`; matches
+  `/api/stats` `fs_total`). If MicroPython ever changes its S3 partition
+  layout, these constants (`env.FS_SIZE`/`FS_OFFSET`) must move with it.
+- Before cutting a release, `pytest tests/ -q` must be green — the image
+  bakes in whatever is committed. To cut one: `git tag vX.Y.Z &&
+  git push origin vX.Y.Z`, then watch the workflow run and sanity-check the
+  published SHA256.

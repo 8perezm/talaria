@@ -57,6 +57,30 @@ subscription. It is built and tested on the **ESP32-S3 N16R8** board
 
 ## Installation
 
+### Easy install (prebuilt image, recommended)
+
+Each release ships a ready-to-flash filesystem image — no Python, mpremote
+or Node needed, just [esptool](https://docs.espressif.com/projects/esptool)
+and the two binary files:
+
+```powershell
+# 1) MicroPython for the ESP32-S3 with octal PSRAM (match the COM port):
+#    https://micropython.org/download/ESP32_GENERIC_S3 -> ESP32_GENERIC_S3-SPIRAM_OCT-*.bin
+esptool --chip esp32s3 --port COM11 --baud 460800 erase_flash
+esptool --chip esp32s3 --port COM11 --baud 460800 write_flash -z 0 ESP32_GENERIC_S3-SPIRAM_OCT-*.bin
+
+# 2) The Talaria filesystem image from the release page
+#    (https://github.com/8perezm/talaria/releases -> talaria-fs-vX.Y.Z.bin),
+#    flashed at the vfs partition offset 0x200000:
+esptool --chip esp32s3 --port COM11 --baud 460800 write_flash 0x200000 talaria-fs-vX.Y.Z.bin
+```
+
+Then skip to step 4 (boot log) below. First boot creates the open
+`Talaria-Agent-Setup` network — join it and the setup page walks you through
+WiFi and the model provider.
+
+### Developer install (from source)
+
 ```powershell
 # 1) Flash MicroPython once (match the COM port + the .bin you downloaded):
 esptool --chip esp32s3 --port COM11 --baud 460800 erase_flash
