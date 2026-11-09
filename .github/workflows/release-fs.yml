@@ -95,7 +95,7 @@ jobs:
           cat "talaria-fs-${GITHUB_REF_NAME}.bin.sha256"
 
       - name: Upload image artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: talaria-fs
           path: talaria-fs.bin
