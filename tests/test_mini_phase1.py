@@ -295,7 +295,8 @@ def test_runturn_max_iters_1(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "postLLM", _always_tool_post(counter))
     out = {}
     reply = agent_core.runTurn("hi", [], out, max_iters=1)
-    assert counter["n"] == 1
+    # loop iteration + the tool-free summary retry
+    assert counter["n"] == 2
     assert reply.startswith("Ran ") and "get_status" in reply
 
 
@@ -304,7 +305,8 @@ def test_runturn_max_iters_5(tmp_path, monkeypatch):
     counter = {"n": 0}
     monkeypatch.setattr(llm, "postLLM", _always_tool_post(counter))
     reply = agent_core.runTurn("hi", [], {}, max_iters=5)
-    assert counter["n"] == 5
+    # 5 loop iterations + the tool-free summary retry
+    assert counter["n"] == 6
     assert reply.startswith("Ran ")
 
 
@@ -313,10 +315,10 @@ def test_runturn_clamps(tmp_path, monkeypatch):
     counter = {"n": 0}
     monkeypatch.setattr(llm, "postLLM", _always_tool_post(counter))
     agent_core.runTurn("hi", [], {}, max_iters=99)
-    assert counter["n"] == 5
+    assert counter["n"] == 6  # clamped to 5, plus the summary retry
     counter["n"] = 0
     agent_core.runTurn("hi", [], {}, max_iters=0)
-    assert counter["n"] == 1
+    assert counter["n"] == 2  # clamped to 1, plus the summary retry
 
 
 def test_runturn_default_from_config(tmp_path, monkeypatch):
@@ -325,7 +327,7 @@ def test_runturn_default_from_config(tmp_path, monkeypatch):
     counter = {"n": 0}
     monkeypatch.setattr(llm, "postLLM", _always_tool_post(counter))
     agent_core.runTurn("hi", [], {})
-    assert counter["n"] == 2
+    assert counter["n"] == 3  # 2 iterations + the summary retry
 
 
 # ---- 7. config + /api/agent ----

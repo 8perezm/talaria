@@ -24,8 +24,9 @@ def test_registry_order_and_count(tmp_path, monkeypatch):
                      "mem_save", "mem_read", "restart_device", "blink", "web_fetch",
                      "memory", "skills", "skill_view", "session_search", "cron",
                      "todo", "delegate_task", "exec_py",
-                     "read_file", "write_file", "patch_file", "search_files"]
-    assert agent_tools.all_tools_mask() == 0x3FFFFF
+                     "read_file", "write_file", "patch_file", "search_files",
+                     "run_script"]
+    assert agent_tools.all_tools_mask() == 0x7FFFFF
 
 
 def test_pins_classic_and_s3(tmp_path, monkeypatch):

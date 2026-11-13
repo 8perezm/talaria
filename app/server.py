@@ -1094,7 +1094,7 @@ def _collect_doctor():
 
 
 # ---------- Phase 9: toolset map (static grouping for /functions) ----------
-# Maps every registered tool name -> toolset. The 22 TOOL dicts are NEVER
+# Maps every registered tool name -> toolset. The 23 TOOL dicts are NEVER
 # touched (append-only registry, bitmask order frozen); this table lives in
 # server.py only and the /functions page groups by the "toolset" field of
 # GET /api/tools. Unknown names fall back to "agent".
@@ -1109,7 +1109,7 @@ TOOLSET_MAP = {
     "patch_file": "files", "search_files": "files",
     "web_fetch": "web",
     "cron": "agent", "todo": "agent", "delegate_task": "agent",
-    "exec_py": "agent",
+    "exec_py": "agent", "run_script": "agent",
 }
 TOOLSET_ORDER = ("device", "memory", "skills", "sessions", "files",
                  "web", "agent")

@@ -22,6 +22,7 @@ from read_file import TOOL as Tool_read_file
 from write_file import TOOL as Tool_write_file
 from patch_file import TOOL as Tool_patch_file
 from search_files import TOOL as Tool_search_files
+from tools.tool_run_script import TOOL as Tool_run_script
 
 TOOL_REGISTRY = [
     Tool_get_status,
@@ -46,6 +47,7 @@ TOOL_REGISTRY = [
     Tool_write_file,
     Tool_patch_file,
     Tool_search_files,
+    Tool_run_script,
 ]
 
 TOOL_COUNT = len(TOOL_REGISTRY)

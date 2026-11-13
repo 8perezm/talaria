@@ -73,6 +73,10 @@ headers. Error shape: `{"error": "..."}` with an HTTP status.
 `get_status`, `gpio_write`, `gpio_read`, `adc_read`, `wifi_scan`, `mem_save`,
 `mem_read`, `restart_device`, `blink`, `web_fetch`, `memory`, `skills_list`,
 `skill_view`, `session_search`, `cron`, `todo`, `delegate_task`, `exec_py`,
-`read_file`, `write_file`, `patch_file`, `search_files`. Pin allowlists are
-S3-aware (`agent_tools.pinCanWrite/Read/ADC` auto-detect via `os.uname()`;
-USB 19/20 and flash 26–32 excluded).
+`read_file`, `write_file`, `patch_file`, `search_files`, `run_script`. Pin
+allowlists are S3-aware (`agent_tools.pinCanWrite/Read/ADC` auto-detect via
+`os.uname()`; USB 19/20 and flash 26–32 excluded).
+
+`run_script` executes a workspace `.py` in-process with the same 8 KB source
+and 1 KB output caps as cron script jobs, so a script can import and use the
+device's own modules.

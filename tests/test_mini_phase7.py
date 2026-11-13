@@ -117,19 +117,20 @@ def _read(rel):
         return f.read()
 
 
-# ---- slots 19-22 ----
+# ---- slots 19-23 ----
 
 def test_slots_19_22_order(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     names = [t["name"] for t in agent_tools.TOOL_REGISTRY]
-    assert names[18:22] == ["read_file", "write_file", "patch_file",
-                            "search_files"]
+    assert names[18:23] == ["read_file", "write_file", "patch_file",
+                            "search_files", "run_script"]
     assert names.index("read_file") == 18  # slot 19 (1-based)
     assert names.index("write_file") == 19  # slot 20
     assert names.index("patch_file") == 20  # slot 21
     assert names.index("search_files") == 21  # slot 22
-    assert len(names) == 22
-    assert agent_tools.all_tools_mask() == 0x3FFFFF
+    assert names.index("run_script") == 22  # slot 23
+    assert len(names) == 23
+    assert agent_tools.all_tools_mask() == 0x7FFFFF
 
 
 def test_new_tools_default_on_and_upgrade(tmp_path, monkeypatch):
@@ -141,13 +142,13 @@ def test_new_tools_default_on_and_upgrade(tmp_path, monkeypatch):
     config.loadConfig()
     for nm in ("read_file", "write_file", "patch_file", "search_files"):
         assert (config.gToolsMask >> agent_tools.toolIndex(nm)) & 1 == 1
-    assert config.gToolsMask == 0x3DFFFF  # all 22 on except exec_py
+    assert config.gToolsMask == 0x7DFFFF  # all 23 on except exec_py
     config.saveToolsMask(0x3FFFF)  # old 18-tool "all on" (exec_py on)
     config.loadConfig()
-    assert config.gToolsMask == 0x3FFFFF  # gains 4, deliberate exec_py kept
+    assert config.gToolsMask == 0x7FFFFF  # gains 5, deliberate exec_py kept
     config.saveToolsMask(0x1FFFF)  # old 17-tool "all on" (exec_py off)
     config.loadConfig()
-    assert config.gToolsMask == 0x3DFFFF  # gains the 4 file tools, NOT exec_py
+    assert config.gToolsMask == 0x7DFFFF  # gains the new tools, NOT exec_py
 
 
 # ---- read_file slices ----

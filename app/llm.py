@@ -656,6 +656,34 @@ def _msg_text(msg):
     return content, reason, rd
 
 
+def _summary_request(user_msg, tool_summary, model):
+    """One compact, tool-free completion so a turn that already ran tools still
+    ends in prose when the follow-up iteration failed.
+
+    Returns "" when the provider cannot answer; the caller then falls back to
+    the deterministic tool digest.
+    """
+    try:
+        body = json.dumps({
+            "model": model,
+            "messages": [
+                {"role": "system",
+                 "content": "Summarize the tool results for the user in one or "
+                            "two short sentences. Do not call tools."},
+                {"role": "user",
+                 "content": "The user asked: %s\n\nTool results:\n%s"
+                            % (str(user_msg)[:400], str(tool_summary)[:1200])},
+            ],
+        })
+        ok, resp, code = postLLM(body)
+        if not ok or code < 200 or code >= 300:
+            return ""
+        res = json.loads(resp)
+        return (res["choices"][0]["message"].get("content") or "").strip()
+    except Exception:
+        return ""
+
+
 def callLLMWithTools(userMsg, history=None, out=None, max_iters=None,
                      log_path=None):
     """Agentic loop. Returns reply string (or 'ERROR: ...').
@@ -811,6 +839,12 @@ def callLLMWithTools(userMsg, history=None, out=None, max_iters=None,
         am = {"role": "assistant"}
         if pre:
             am["content"] = pre[:500]
+        if preR:
+            # Reasoning models (DeepSeek V4.x and friends) require the original
+            # reasoning to be echoed back on a tool continuation. Omitting it
+            # makes the provider accept the connection and then never answer,
+            # which looks exactly like a hung request until the timeout.
+            am["reasoning_content"] = preR
         am["tool_calls"] = [{"id": cid, "type": "function",
                              "function": {"name": nm, "arguments": ag}}
                             for (cid, nm, ag) in call_list]
@@ -847,6 +881,15 @@ def callLLMWithTools(userMsg, history=None, out=None, max_iters=None,
             toolSummary += "%s: %s\n" % (nm, res2[:400])
             if len(toolSummary) > 1500:
                 toolSummary = toolSummary[:1500]
+    if not finalText and toolSummary:
+        # A failed follow-up (or an exhausted budget) used to leave the user
+        # with a raw tool dump. Try once, compactly, for real prose.
+        model = ""
+        try:
+            model = req.get("model", "")
+        except Exception:
+            pass
+        finalText = _summary_request(userMsg, toolSummary, model)
     if not finalText and toolSummary:
         if sawHttpFail:
             finalText = "Ran " + toolsLog + "but the summary request failed. Results:\n" + toolSummary

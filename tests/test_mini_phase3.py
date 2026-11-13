@@ -322,8 +322,8 @@ def test_tool_slots_and_dispatch(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     names = [t["name"] for t in agent_tools.TOOL_REGISTRY]
     assert names.index("skills") == 11 and names.index("skill_view") == 12
-    assert names[15:18] == ["todo", "delegate_task", "exec_py"] and len(names) == 22
-    assert agent_tools.all_tools_mask() == 0x3FFFFF
+    assert names[15:18] == ["todo", "delegate_task", "exec_py"] and len(names) == 23
+    assert agent_tools.all_tools_mask() == 0x7FFFFF
     _skills_approval(False)
     s = agent_tools.execTool("skills", {"action": "list"})
     d = json.loads(s)

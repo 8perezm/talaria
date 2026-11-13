@@ -585,11 +585,16 @@ def _resolve_tools_mask(doc, default_new, off_bits):
         return default_new
     # Auto-enable newly added tools when the stored value was an old "all on"
     # mask. Deliberate default_off bits stay exactly as stored.
+    #
+    # A stored default mask is "all on except the deliberate default-off
+    # tools", e.g. 0x3DFFFF for 22 tools with exec_py off. That never equals
+    # (1 << k) - 1, so test both spellings - otherwise any tool added after the
+    # user's config was saved would stay disabled forever.
     try:
         from agent_tools import TOOL_COUNT
         for k in range(1, TOOL_COUNT):
             old_all = (1 << k) - 1 if k < 32 else 0xFFFFFFFF
-            if m == old_all:
+            if m == old_all or (m | off_bits) == old_all:
                 m = default_new | (m & off_bits)
                 break
     except Exception:

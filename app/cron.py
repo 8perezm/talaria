@@ -1034,6 +1034,23 @@ def run_due(run_fn=None, now=None):
     return {"success": True, "ran": len(results), "results": results}
 
 
+def run_script_file(path):
+    """Public entry point for the run_script tool.
+
+    Normalises a workspace path and executes it with the same validation,
+    size caps (8 KB source / 1 KB output) and executor that cron script jobs
+    use. Scripts run in-process, so they can import and use the device's own
+    modules. Returns (ok, output_or_error). Never raises.
+    """
+    try:
+        norm = _norm_script(path)
+    except Exception as e:
+        return False, "bad path: %s" % str(e)[:80]
+    if not norm:
+        return False, "path must be a .py file under workspace/"
+    return _run_script(norm)
+
+
 def handle(d):
     """Single dict-in/dict-out dispatcher shared by the `cron` tool and
     POST /api/cron. Never raises."""

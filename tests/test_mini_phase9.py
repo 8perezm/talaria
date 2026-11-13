@@ -124,12 +124,12 @@ def test_clear_user_op_shape(tmp_path, monkeypatch):
         "op shape fact" not in memory.snapshot("user")
 
 
-# ---- 3. toolset map covers all 22 ----
+# ---- 3. toolset map covers all 23 ----
 
 def test_toolset_map_covers_registry(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     names = [t["name"] for t in agent_tools.TOOL_REGISTRY]
-    assert len(names) == 22
+    assert len(names) == 23
     assert set(server.TOOLSET_MAP.keys()) == set(names)
     assert set(server.TOOLSET_ORDER) == \
         {"device", "memory", "skills", "sessions", "files", "web", "agent"}
@@ -143,7 +143,7 @@ def test_api_tools_toolset_and_default_off(tmp_path, monkeypatch):
     res = _request("get", "/api/tools")
     assert res.status_code == 200
     tools = res.json["tools"]
-    assert len(tools) == 22
+    assert len(tools) == 23
     by_name = {t["name"]: t for t in tools}
     assert by_name["memory"]["toolset"] == "memory"
     assert by_name["skill_view"]["toolset"] == "skills"
@@ -159,7 +159,7 @@ def test_api_tools_toolset_and_default_off(tmp_path, monkeypatch):
 
 def test_registry_still_22_no_new_tools(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    assert len(agent_tools.TOOL_REGISTRY) == 22
+    assert len(agent_tools.TOOL_REGISTRY) == 23
 
 
 # ---- 4. agent approvals backend ----

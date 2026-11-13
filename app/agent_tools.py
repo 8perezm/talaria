@@ -419,6 +419,10 @@ def buildSystemPrompt():
     names = [t["name"] for i, t in enumerate(TOOL_REGISTRY) if toolEnabledIdx(i)]
     if names:
         parts.append("Enabled device tools: " + ", ".join(names) + ". ")
+        if "run_script" in names:
+            parts.append("Scripts you write under workspace/ run on the device "
+                         "via run_script and may import the device's own "
+                         "modules. ")
     else:
         parts.append("Enabled device tools: (none). ")
     # The model would otherwise read "device agent + web_fetch tool" as

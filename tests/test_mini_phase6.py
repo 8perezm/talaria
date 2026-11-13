@@ -60,8 +60,8 @@ def test_slots_append_order(tmp_path, monkeypatch):
     assert names.index("todo") == 15  # slot 16 (1-based)
     assert names.index("delegate_task") == 16  # slot 17
     assert names.index("exec_py") == 17  # slot 18
-    assert len(names) == 22
-    assert agent_tools.all_tools_mask() == 0x3FFFFF
+    assert len(names) == 23
+    assert agent_tools.all_tools_mask() == 0x7FFFFF
 
 
 # ---- todo ----
@@ -349,12 +349,12 @@ def test_exec_fresh_default_excludes(tmp_path, monkeypatch):
     assert (config.gToolsMask >> idx) & 1 == 0  # exec_py off by default
     assert (config.gToolsMask >> agent_tools.toolIndex("todo")) & 1 == 1
     assert (config.gToolsMask >> agent_tools.toolIndex("delegate_task")) & 1 == 1
-    assert config.gToolsMask == 0x3DFFFF  # all 22 on except exec_py
+    assert config.gToolsMask == 0x7DFFFF  # all 23 on except exec_py
 
 
 def test_exec_explicit_enable_survives_reload(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    config.saveToolsMask(0x3FFFFF)  # user deliberately enables everything
+    config.saveToolsMask(0x7FFFFF)  # user deliberately enables everything
     config.loadConfig()
     assert (config.gToolsMask >> agent_tools.toolIndex("exec_py")) & 1 == 1
 
@@ -363,7 +363,7 @@ def test_exec_old_stored_mask_no_gain(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     config.saveToolsMask(0x7FFF)  # old 15-tool "all on" stored on flash
     config.loadConfig()
-    assert config.gToolsMask == 0x3DFFFF  # gains todo+delegate+file tools, NOT exec_py
+    assert config.gToolsMask == 0x7DFFFF  # gains todo+delegate+file tools, NOT exec_py
     assert (config.gToolsMask >> agent_tools.toolIndex("exec_py")) & 1 == 0
 
 
@@ -384,7 +384,7 @@ def test_restriction_filters_dispatch_and_prompt(tmp_path, monkeypatch):
         agent_tools._ACTIVE_TOOL_ALLOW = None
     req2 = {}
     agent_tools.addToolsArray(req2)
-    assert len(req2["tools"]) == 22  # unrestricted parent sees everything
+    assert len(req2["tools"]) == 23  # unrestricted parent sees everything
 
 
 # ---- micropython portability ----

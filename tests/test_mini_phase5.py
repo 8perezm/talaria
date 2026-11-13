@@ -291,8 +291,8 @@ def test_tool_slot_and_dispatch(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     names = [t["name"] for t in agent_tools.TOOL_REGISTRY]
     assert names.index("cron") == 14  # slot 15 (1-based)
-    assert names[15:18] == ["todo", "delegate_task", "exec_py"] and len(names) == 22
-    assert agent_tools.all_tools_mask() == 0x3FFFFF
+    assert names[15:18] == ["todo", "delegate_task", "exec_py"] and len(names) == 23
+    assert agent_tools.all_tools_mask() == 0x7FFFFF
     s = agent_tools.execTool("cron", {"op": "add", "prompt": "via tool",
                                       "every_s": 120})
     d = json.loads(s)
