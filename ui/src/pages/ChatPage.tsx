@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import {
+  ArrowDown,
   ArrowUp,
   ChevronDown,
   Cpu,
@@ -40,6 +41,36 @@ const SUGGESTIONS = [
 
 let turnSeq = 0
 
+/* How close to the tail still counts as "reading the tail". Deltas arrive
+   many times a second, so a pixel-exact test would unpin the view on any
+   sub-pixel rounding; a few tens of pixels stays forgiving without ever
+   yanking a reader who has deliberately scrolled up. */
+const BOTTOM_SLOP_PX = 48
+
+function isNearBottom(el: HTMLElement) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLOP_PX
+}
+
+/* Expanded reasoning blocks are a reading preference, not per-turn state:
+   expand one and every later block opens the same way, across reloads. */
+const THINKING_OPEN_KEY = 'talaria_thinking_open'
+
+function readThinkingOpen(): boolean {
+  try {
+    return localStorage.getItem(THINKING_OPEN_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function saveThinkingOpen(open: boolean) {
+  try {
+    localStorage.setItem(THINKING_OPEN_KEY, open ? '1' : '0')
+  } catch {
+    /* private mode — the in-session choice still applies */
+  }
+}
+
 export function ChatPage() {
   const { status, config, authed, refreshStatus } = useAppData()
   const { push } = useToast()
@@ -54,10 +85,15 @@ export function ChatPage() {
   const [models, setModels] = useState<string[]>([])
   const [modelOpen, setModelOpen] = useState(false)
   const [restored, setRestored] = useState(false)
+  const [thinkingOpen, setThinkingOpen] = useState(readThinkingOpen)
+  const [atBottom, setAtBottom] = useState(true)
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  /* Follow new output only while the reader is already at the tail. Set by
+     the scroll handler; an explicit send or "Jump to latest" re-arms it. */
+  const stickToBottomRef = useRef(true)
 
   /* ---- restore transcript from the device session store ----
      `?session=<id>` opens (and activates) that conversation — this is how a
@@ -128,14 +164,40 @@ export function ChatPage() {
     }
   }, [models.length, modelsLoading])
 
-  const scrollToBottom = useCallback(() => {
+  /* Keep the transcript pinned to the tail ONLY while the reader is at the
+     tail. Every delta patches the turn and re-renders; scrolling
+     unconditionally on each patch is what dragged the page away from someone
+     reading earlier output. Scrolling back down re-arms the follow. */
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    stickToBottomRef.current = true
+    setAtBottom(true)
+    try {
+      el.scrollTo({ top: el.scrollHeight, behavior })
+    } catch {
+      el.scrollTop = el.scrollHeight
+    }
+  }, [])
+
+  const handleTranscriptScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const stick = isNearBottom(el)
+    stickToBottomRef.current = stick
+    setAtBottom((prev) => (prev === stick ? prev : stick))
   }, [])
 
   useEffect(() => {
-    scrollToBottom()
-  }, [turns, scrollToBottom])
+    if (!stickToBottomRef.current) return
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [turns])
+
+  const setThinkingPreference = useCallback((open: boolean) => {
+    setThinkingOpen(open)
+    saveThinkingOpen(open)
+  }, [])
 
   const history = useMemo<ChatLogEntry[]>(
     () =>
@@ -164,6 +226,10 @@ export function ChatPage() {
       const userTurn: Turn = { id: ++turnSeq, role: 'user', text: message }
       const replyTurn: Turn = { id: ++turnSeq, role: 'assistant', text: '', streaming: true }
       const replyId = replyTurn.id
+      /* Sending is an explicit "take me to the conversation" action: follow
+         the new turn even if the reader had scrolled up beforehand. */
+      stickToBottomRef.current = true
+      setAtBottom(true)
       setTurns((prev) => [...prev, userTurn, replyTurn])
 
       const controller = new AbortController()
@@ -220,7 +286,10 @@ export function ChatPage() {
                 patchTurn(replyId, { text: acc })
               }
               if (typeof evt.reasoning === 'string') {
-                reasoning = evt.reasoning
+                /* Provider streams reasoning as deltas, exactly like content.
+                   Replacing instead of appending left only the last fragment
+                   in the block. */
+                reasoning += evt.reasoning
                 patchTurn(replyId, { reasoning })
               }
               if (evt.need_tools) needTools = true
@@ -284,6 +353,8 @@ export function ChatPage() {
       const res = await api.post<{ session?: string }>('/api/sessions', {})
       const sid = typeof res.session === 'string' ? res.session : ''
       abortRef.current?.abort()
+      stickToBottomRef.current = true
+      setAtBottom(true)
       setTurns([])
       if (sid) {
         setSessionId(sid)
@@ -420,37 +491,61 @@ export function ChatPage() {
       </div>
 
       {/* ---- transcript ---- */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
-        {empty ? (
-          <div className="mx-auto flex h-full max-w-3xl flex-col items-center justify-center gap-4 px-4 py-10 text-center">
-            <div className="flex items-center gap-2 text-midground">
-              <Sparkles className="h-4 w-4" />
-              <span className="label-display text-[0.78rem] tracking-[0.18em]">Talaria Agent</span>
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          onScroll={handleTranscriptScroll}
+          className="h-full overflow-y-auto"
+        >
+          {empty ? (
+            <div className="mx-auto flex h-full max-w-3xl flex-col items-center justify-center gap-4 px-4 py-10 text-center">
+              <div className="flex items-center gap-2 text-midground">
+                <Sparkles className="h-4 w-4" />
+                <span className="label-display text-[0.78rem] tracking-[0.18em]">Talaria Agent</span>
+              </div>
+              <p className="max-w-md text-[0.86rem] leading-relaxed text-text-tertiary">
+                A micro agent running on an ESP32-S3. Ask it something, or let it reach for the
+                silicon — GPIO, ADC, files, the network.
+              </p>
+              <div className="grid w-full max-w-xl grid-cols-1 gap-1.5 sm:grid-cols-2">
+                {SUGGESTIONS.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => void send(s)}
+                    className="border border-border px-3 py-2 text-left text-[0.78rem] text-text-secondary transition-colors hover:border-midground/40 hover:text-midground"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
             </div>
-            <p className="max-w-md text-[0.86rem] leading-relaxed text-text-tertiary">
-              A micro agent running on an ESP32-S3. Ask it something, or let it reach for the
-              silicon — GPIO, ADC, files, the network.
-            </p>
-            <div className="grid w-full max-w-xl grid-cols-1 gap-1.5 sm:grid-cols-2">
-              {SUGGESTIONS.map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  onClick={() => void send(s)}
-                  className="border border-border px-3 py-2 text-left text-[0.78rem] text-text-secondary transition-colors hover:border-midground/40 hover:text-midground"
-                >
-                  {s}
-                </button>
+          ) : (
+            <div className="mx-auto flex max-w-3xl flex-col gap-4 px-1 py-4">
+              {turns.map((turn) => (
+                <TurnView
+                  key={turn.id}
+                  turn={turn}
+                  thinkingOpen={thinkingOpen}
+                  onThinkingOpen={setThinkingPreference}
+                />
               ))}
+              {busy && <div className="h-1" />}
             </div>
-          </div>
-        ) : (
-          <div className="mx-auto flex max-w-3xl flex-col gap-4 px-1 py-4">
-            {turns.map((turn) => (
-              <TurnView key={turn.id} turn={turn} />
-            ))}
-            {busy && <div className="h-1" />}
-          </div>
+          )}
+        </div>
+
+        {/* Only shown once the reader is away from the tail: an explicit way
+            back into the follow, without yanking the view on every delta. */}
+        {!empty && !atBottom && (
+          <button
+            type="button"
+            onClick={() => scrollToBottom('smooth')}
+            className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1 border border-border bg-background-base px-2.5 py-1 text-[0.66rem] text-text-secondary shadow-[0_10px_30px_rgba(0,0,0,0.5)] hover:text-midground"
+          >
+            <ArrowDown className="h-3 w-3" />
+            Jump to latest
+          </button>
         )}
       </div>
 
@@ -513,8 +608,29 @@ export function ChatPage() {
   )
 }
 
-function TurnView({ turn }: { turn: Turn }) {
-  const [showReasoning, setShowReasoning] = useState(false)
+function TurnView({
+  turn,
+  thinkingOpen,
+  onThinkingOpen,
+}: {
+  turn: Turn
+  thinkingOpen: boolean
+  onThinkingOpen: (open: boolean) => void
+}) {
+  /* Each block starts from the remembered preference. Toggling a block
+     updates that preference, so the next block opens the same way — the
+     reader's choice sticks for this conversation and later reloads. */
+  const [showThinking, setShowThinking] = useState(thinkingOpen)
+  const thinkingBodyRef = useRef<HTMLDivElement | null>(null)
+  const thinkingStickRef = useRef(true)
+
+  const hasThinking = Boolean(turn.reasoning) || (turn.streaming && !turn.text)
+
+  useEffect(() => {
+    if (!showThinking) return
+    const el = thinkingBodyRef.current
+    if (el && thinkingStickRef.current) el.scrollTop = el.scrollHeight
+  }, [turn.reasoning, showThinking])
 
   if (turn.role === 'user') {
     return (
@@ -540,19 +656,36 @@ function TurnView({ turn }: { turn: Turn }) {
         {turn.streaming && <span className="text-[0.6rem] text-text-faint animate-pulse-soft">streaming</span>}
       </div>
 
-      {turn.reasoning && (
+      {hasThinking && (
         <div className="border border-border/70">
           <button
             type="button"
-            onClick={() => setShowReasoning((v) => !v)}
+            onClick={() => {
+              const next = !showThinking
+              setShowThinking(next)
+              onThinkingOpen(next)
+            }}
+            aria-expanded={showThinking}
             className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[0.66rem] text-text-tertiary hover:text-midground"
           >
-            <ChevronDown className={cn('h-3 w-3 transition-transform', !showReasoning && '-rotate-90')} />
-            reasoning
+            <ChevronDown
+              className={cn('h-3 w-3 shrink-0 transition-transform', !showThinking && '-rotate-90')}
+            />
+            <span className="label-display text-[0.6rem] tracking-[0.16em]">Thinking</span>
+            {turn.streaming && !turn.text && (
+              <span className="animate-pulse-soft text-[0.6rem] text-text-faint">thinking…</span>
+            )}
           </button>
-          {showReasoning && (
-            <div className="whitespace-pre-wrap break-words border-t border-border/60 px-2 py-1.5 font-mono-ui text-[0.7rem] leading-relaxed text-text-tertiary">
-              {turn.reasoning}
+          {showThinking && (
+            <div
+              ref={thinkingBodyRef}
+              onScroll={(event) => {
+                const el = event.currentTarget
+                thinkingStickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 24
+              }}
+              className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words border-t border-border/60 px-2 py-1.5 font-mono-ui text-[0.7rem] leading-relaxed text-text-tertiary"
+            >
+              {turn.reasoning || 'thinking…'}
             </div>
           )}
         </div>
@@ -563,19 +696,12 @@ function TurnView({ turn }: { turn: Turn }) {
           <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span className="break-words">{turn.text || 'Request failed'}</span>
         </div>
-      ) : (
-        <div
-          className={cn(
-            'text-[0.88rem] leading-relaxed break-words',
-            turn.streaming && !turn.text && 'text-text-faint',
-          )}
-        >
-          {turn.text ? (
-            <Markdown source={turn.text} className={turn.streaming ? 'caret' : undefined} />
-          ) : (
-            <span className="text-[0.8rem] text-text-faint">thinking…</span>
-          )}
+      ) : turn.text ? (
+        <div className="text-[0.88rem] leading-relaxed break-words">
+          <Markdown source={turn.text} className={turn.streaming ? 'caret' : undefined} />
         </div>
+      ) : turn.streaming ? null : (
+        <div className="text-[0.8rem] text-text-faint">No reply.</div>
       )}
     </div>
   )

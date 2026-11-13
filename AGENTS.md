@@ -552,6 +552,31 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   (API is auth-gated), so it applies the cached theme instead of resetting to
   defaults; only a browser that has never seen a theme falls back to stock.
 
+## Chat transcript: follow-the-tail + thinking blocks (2026-11-13)
+
+- **Auto-scroll is conditional, not per-delta.** `ChatPage.tsx` keeps a
+  `stickToBottomRef` armed only while the reader is within `BOTTOM_SLOP_PX`
+  (48 px) of the tail; the `[turns]` effect bails out when it is disarmed.
+  This exists because the old effect scrolled on *every* turn patch — i.e.
+  every stream delta — so reading earlier output while the agent was still
+  writing was impossible. Scrolling back to the bottom re-arms it; sending a
+  message and "New Chat" re-arm it explicitly; a "Jump to latest" button
+  appears whenever the view is parked. Do not replace this with a bare
+  `scrollTop = scrollHeight` effect.
+- **Reasoning deltas must accumulate.** `llm._stream_one_provider` yields each
+  `reasoning_content`/`reasoning` delta separately and `server.py` forwards it
+  as `{"reasoning": ...}`; `ChatPage` used to assign (`reasoning = …`), which
+  showed only the last fragment. It is now `reasoning += evt.reasoning`.
+- **Thinking block:** expandable "Thinking" panel rendered while reasoning is
+  arriving (`turn.reasoning || (streaming && !text)`), monospace body capped at
+  `max-h-72` with its own stick-to-bottom. The collapsed/expanded choice is a
+  reading preference in `localStorage['talaria_thinking_open']`, and each new
+  `TurnView` seeds `useState(thinkingOpen)` from it — expand once, later blocks
+  open the same way. Do not make it per-block-only state.
+- Pinned by `tests/test_chat_ui.py` (source audit + a check that the shipped
+  `www/assets/app.js` was rebuilt). Reasoning is **not** persisted in the
+  session log yet, so a refresh keeps the reply text but not the thinking.
+
 ## Sessions page: ordering + one export per conversation (2026-11-08)
 
 - The list has two ordering controls (`BY DATE` / `SIZE`) in the Conversations
