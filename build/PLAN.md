@@ -11,8 +11,9 @@ Hermes reference clone: `C:\Users\miguel\AppData\Local\Temp\opencode\hermes-agen
 
 ## 1. Baseline (what exists today — do not regress)
 
-- **Loop** (`llm.py`): `callLLMWithTools` — 3 iters, ≤20 calls/iter, 25s tool
-  budget, `max_tokens:800`, history 8 turns, msg cap 1500 chars, final cap 3500.
+- **Loop** (`llm.py`): `callLLMWithTools` — 3 iters, ≤20 calls/iter,
+  `agent.max_tokens` (default 4000; chat replies stay at 800), per-tool 30 s
+  advisory timing, history 8 turns, msg cap 1500 chars, final cap 3500.
   Buffered path `_post_raw` (HTTP/1.0, Content-Length, 45s); SSE path
   `streamChat` (HTTP/1.1 chunked, `data:{"delta"}` events). Raw sockets
   (urequests has no timeout). IPv4-first DNS cache, SNI, gc+backoff retries.
@@ -37,8 +38,9 @@ Hermes reference clone: `C:\Users\miguel\AppData\Local\Temp\opencode\hermes-agen
   auth_token, tools_mask. Atomic save (tmp+rename).
 - **Tests**: `python -m pytest tests/ -q` (host, `tests/stubs.py`).
 - **Deploy**: serial UART port (was COM11 — verify), one `mpremote cp` per
-  file + `os.stat` size assert, soft-reset, HTTP verify on
-  `http://192.168.5.56/` (`Bearer testtest`). Full rules in `AGENTS.md`.
+  file + `os.stat` size assert, soft-reset, HTTP verify on the address the
+  boot log printed (`WiFi OK: <ip>`, DHCP — pass it as `-DeviceHost`);
+  `Bearer testtest`. Full rules in `AGENTS.md`.
 
 ## 2. Hard constraints (read before designing)
 

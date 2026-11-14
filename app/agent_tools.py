@@ -91,6 +91,13 @@ def initAgentFS():
         _sess.ensure_store()
     except Exception as e:
         print("[fs] session store:", str(e)[:60])
+    # Firmware-shipped skills (currently the e-paper screen guide) so the
+    # agent does not have to rediscover device module APIs every turn.
+    try:
+        import skillstore as _skills
+        _skills.ensure_builtin()
+    except Exception as e:
+        print("[fs] builtin skills:", str(e)[:60])
     try:
         with open(MEM_PATH, "a"):
             pass
@@ -253,7 +260,7 @@ def _rotate_chatlog(max_bytes, keep_bytes, path=None, block=16384):
             pass
 
 
-def appendChatLog(user, asst, path=None, max_b=None, keep_b=None):
+def appendChatLog(user, asst, path=None, max_b=None, keep_b=None, tools=None):
     # one open/close per turn, minimal flash wear
     p = path or active_log_path()
     cap = _chat_entry_chars()
@@ -275,9 +282,15 @@ def appendChatLog(user, asst, path=None, max_b=None, keep_b=None):
     except Exception:
         pass
     try:
+        arec = {"r": "assistant", "c": (asst or "")[:cap]}
+        trace = (tools or "").strip()
+        if trace:
+            # Extra key, same record: the UI/export read "c" only, so this is
+            # invisible there but gives the next turn a durable tool trail.
+            arec["t"] = trace[:400]
         with open(p, "a") as f:
             f.write(json.dumps({"r": "user", "c": (user or "")[:cap]}) + "\n")
-            f.write(json.dumps({"r": "assistant", "c": (asst or "")[:cap]}) + "\n")
+            f.write(json.dumps(arec) + "\n")
     except OSError:
         return False
     return True
@@ -323,6 +336,14 @@ def injectRecentLog(msgs, curUser, maxMsgs=8, path=None):
             continue
         msgs.append({"role": r, "content": c[:1500]})
         added += 1
+        # Replay what the previous turn actually did. Without it the model
+        # reads prose like "the display code was drafted" and cannot tell that
+        # weather_panel.py already exists (or is only a 15-byte placeholder).
+        t = d.get("t", "")
+        if r == "assistant" and t:
+            msgs.append({"role": "system",
+                         "content": "Tools used in that turn: " + str(t)[:400]})
+            added += 1
     return added
 
 
@@ -438,12 +459,16 @@ def buildSystemPrompt():
                  "scheduled work, or fresh internet "
                  "data. Never guess pin levels or current events. ")
     parts.append("Workspace files live under opt/data/workspace/ (shown as "
-                 "/workspace/ in Files) and can be read, searched and edited "
-                 "with the read_file, search_files, write_file and patch_file "
-                 "tools (a .bak checkpoint is kept before each write). When "
-                 "creating scripts or files, ALWAYS write under "
-                 "opt/data/workspace/ — never to the flash root or other "
-                 "locations. ")
+                 "/workspace/ in Files); bare names and workspace/... map "
+                 "there. read_file, search_files (default root opt/data), "
+                 "write_file and patch_file work on them, and a .bak "
+                 "checkpoint is kept before each write. Long files are built "
+                 "in chunks: write_file append=true adds a <=4KB chunk "
+                 "(assembled file <=16KB), then patch_file fixes a span. "
+                 "Scripts run in-process via run_script (<=16KB); they may "
+                 "import device modules such as screen, epd and framebuf, "
+                 "and print up to 1KB. Always write new files under "
+                 "opt/data/workspace/. ")
     parts.append("When the user asks to save a procedure as a reusable skill, "
                  "draft the full skill text and call skills with action "
                  "create (or propose for a /learn draft, patch/delete to revise): "

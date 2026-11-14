@@ -281,6 +281,105 @@ def _path_for(name):
     return SKILLS_DIR + "/" + name + ".md"
 
 
+BUILTIN_MARKER = SKILLS_DIR + "/.builtin"
+
+
+def _builtin_state():
+    """Read the `{v, h}` marker. h maps name -> hash of the copy WE wrote.
+
+    The old marker was a bare version string, which made a revision
+    unshippable: the version advanced (so the early return stopped) but the
+    existing file was "a user copy" and was never replaced. Recording the hash
+    of what we installed distinguishes an untouched builtin from an edit.
+    """
+    raw = _read_file(BUILTIN_MARKER, 512)
+    if not raw:
+        return {}, False
+    try:
+        doc = json.loads(raw)
+        if isinstance(doc, dict):
+            h = doc.get("h")
+            return {"v": str(doc.get("v", "")),
+                    "h": h if isinstance(h, dict) else {}}, False
+    except Exception:
+        pass
+    # Legacy bare version: the file was installed by us but we cannot prove it
+    # was not edited, so treat the body as replaceable once.
+    return {"v": raw.strip(), "h": {}}, True
+
+
+def _write_builtin_state(ver, hashes):
+    try:
+        _ensure_dir(SKILLS_DIR)
+        with open(BUILTIN_MARKER, "w") as f:
+            f.write(json.dumps({"v": str(ver), "h": hashes}))
+    except Exception:
+        pass
+
+
+def ensure_builtin():
+    """Install firmware-shipped skills once per builtin version.
+
+    A copy the user edited is never overwritten; one we installed and that is
+    still byte-identical (hash matches the marker) is replaced on a version
+    bump. Deleting one leaves it deleted until the next version. Returns the
+    names written now. Never raises - boot must not depend on the skills store.
+    """
+    try:
+        import builtin_skills as _bs
+    except Exception:
+        return []
+    try:
+        ver = str(getattr(_bs, "BUILTIN_VERSION", "1"))
+        items = list(_bs.SKILLS.items())
+    except Exception:
+        return []
+    state, legacy = _builtin_state()
+    same_ver = (state.get("v") == ver)
+    prev_h = state.get("h", {}) or {}
+    kept_h = {}
+    installed = []
+    for name, content in items:
+        name = str(name)
+        try:
+            cur = _read_file(_path_for(name), SKILL_MAX_BYTES + 1)
+            ours = prev_h.get(name)
+            if cur is None:
+                # No file: it was either never installed, or the user deleted
+                # it. A recorded hash means "we wrote it before", so a delete
+                # stays deleted; no record means install it.
+                if ours:
+                    continue
+            else:
+                if ours and _hash8(cur) == ours:
+                    if same_ver:
+                        kept_h[name] = ours
+                        continue  # already current
+                elif legacy and not prev_h:
+                    pass  # migrated from the bare-version marker
+                else:
+                    kept_h[name] = _hash8(cur)  # user copy: leave it alone
+                    continue
+            content = _norm_content(content)
+            verr = _size_error(content)
+            if verr:
+                print("[skills] builtin %s: %s" % (name, verr))
+                continue
+            content, _desc, _warns, verr = _validate_new_content(content)
+            if verr:
+                print("[skills] builtin %s rejected: %s" % (name, verr))
+                continue
+            _write_skill(name, content)
+            installed.append(name)
+            kept_h[name] = _hash8(content)
+        except Exception as e:
+            print("[skills] builtin %s: %s" % (name, str(e)[:60]))
+    _write_builtin_state(ver, kept_h)
+    if installed:
+        print("[skills] installed: " + ", ".join(installed))
+    return installed
+
+
 def _read_file(path, limit):
     try:
         with open(path, "r") as f:

@@ -77,6 +77,8 @@ headers. Error shape: `{"error": "..."}` with an HTTP status.
 allowlists are S3-aware (`agent_tools.pinCanWrite/Read/ADC` auto-detect via
 `os.uname()`; USB 19/20 and flash 26–32 excluded).
 
-`run_script` executes a workspace `.py` in-process with the same 8 KB source
-and 1 KB output caps as cron script jobs, so a script can import and use the
-device's own modules.
+`run_script` executes a workspace `.py` in-process as `__main__` with a 16 KB
+source and 1 KB output cap (cron script jobs share the caps), so a script can
+import and use the device's own modules. Build long scripts with
+`write_file append=true` (≤4 KB per call, ≤16 KB per file) and inspect them
+with `read_file`/`patch_file`; `search_files` defaults to `opt/data`.

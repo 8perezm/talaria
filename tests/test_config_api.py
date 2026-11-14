@@ -102,7 +102,7 @@ def test_config_form_unknown_key_is_400(tmp_path, monkeypatch):
         r = _request("post", "/api/config/form", {"values": {
             "agent.max_iters": 99}})
         assert r.status_code == 200, r.json
-        assert config.agent_max_iters == 5
+        assert config.agent_max_iters == config.AGENT_MAX_ITERS_MAX
     finally:
         server._app = None
 

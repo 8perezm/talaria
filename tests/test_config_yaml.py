@@ -25,6 +25,7 @@ def _reset_globals():
     config.cfgFallbackModel = ""
     config.cfgMdnsName = config.MDNS_NAME
     config.cfgApSsid = config.AP_SSID
+    config.agent_max_tokens = config.DEFAULT_AGENT_MAX_TOKENS
     config.gToolsMask = 0
 
 
@@ -49,6 +50,22 @@ def test_yaml_storage_roundtrip(tmp_path, monkeypatch):
     assert config.cfgAuthToken == "token-123"
     assert (config.cfgChatLogMaxKB, config.cfgChatLogKeepKB,
             config.cfgChatRestoreTurns) == (512, 300, 25)
+
+
+def test_agent_max_tokens_is_schema_backed_and_clamped(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_globals()
+    field = [f for f in schema.FIELDS if f["key"] == "agent.max_tokens"]
+    assert field and field[0]["default"] == config.DEFAULT_AGENT_MAX_TOKENS
+
+    config.save_form({"agent.max_tokens": 3000})
+    assert config.agent_max_tokens == 3000
+    assert "max_tokens: 3000" in open("config.yaml").read()
+
+    config.save_form({"agent.max_tokens": 10})
+    assert config.agent_max_tokens == config.AGENT_MAX_TOKENS_MIN
+    config.save_form({"agent.max_tokens": 9000})
+    assert config.agent_max_tokens == config.AGENT_MAX_TOKENS_MAX
 
 
 def test_legacy_json_migrates_once(tmp_path, monkeypatch):
@@ -198,7 +215,7 @@ def test_bad_hand_edit_falls_back_instead_of_aborting_boot(tmp_path, monkeypatch
     with open("config.yaml", "w") as f:
         f.write("agent:\n  max_iters: not-a-number\n  endpoint: https://api.test/v1\n")
     config.loadConfig()
-    assert config.agent_max_iters == 3
+    assert config.agent_max_iters == config.DEFAULT_AGENT_MAX_ITERS
     assert config.cfgEndpoint == "https://api.test/v1"
 
 

@@ -40,11 +40,13 @@ TOOL = {
     "ui_hint": "Run a workspace script",
     "description": (
         "Run a Python script that lives in the agent workspace and return its "
-        "printed output. The script runs in-process on the device, so it can "
-        "import and use the device's own modules. Use write_file to create or "
-        "update the script first. Limits: 8 KB of source, 1 KB of captured "
-        "output. Paths are workspace-relative: 'clock.py' and "
-        "'workspace/clock.py' are the same file."),
+        "printed output (print() and sys.stdout). The script runs in-process "
+        "on the device as __main__, so it can import and use the device's own "
+        "modules (screen, epd, framebuf, ...). Use write_file to create or "
+        "update the script first; build long scripts with append=true in "
+        "chunks. Limits: 16 KB of source, 1 KB of captured output. Paths are "
+        "workspace-relative: 'clock.py' and 'workspace/clock.py' are the "
+        "same file."),
     "parameters": {
         "type": "object",
         "properties": {

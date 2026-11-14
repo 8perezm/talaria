@@ -130,11 +130,29 @@ FIELDS = [
         "group": "Loop",
         "type": "number",
         "label": "Max tool iterations",
-        "description": "Upper bound on tool round trips per turn.",
+        "description": "Upper bound on tool round trips per turn. A real "
+                       "build needs about 8: read the skill, fetch data, "
+                       "write 2-3 chunks, run, fix, run again. Too low and "
+                       "the turn stops holding a half-written script.",
         "min": 1,
-        "max": 5,
+        "max": 12,
         "step": 1,
-        "default": 3,
+        "default": 8,
+    },
+    {
+        "key": "agent.max_tokens",
+        "category": "agent",
+        "group": "Loop",
+        "type": "number",
+        "label": "Max output tokens",
+        "description": "Completion budget for one model call in the tool "
+                       "loop. Tool arguments carry file content, so this "
+                       "must be large enough for a chunk of code (4000 fits "
+                       "about 3KB). Reasoning tokens count against it too.",
+        "min": 512,
+        "max": 8192,
+        "step": 128,
+        "default": 4000,
     },
     {
         "key": "fallback.endpoint",

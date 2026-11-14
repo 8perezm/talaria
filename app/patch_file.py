@@ -13,7 +13,7 @@ except ImportError:
 def patch(path, old, new):
     import fsutil as _m
     import checkpoint as _cp
-    n = _m.norm(path)
+    n = _m.tool_path(_m.norm(path))
     if n is None or not n:
         return {"success": False, "error": "invalid path"}
     werr = _m.write_refusal(n)
@@ -36,12 +36,12 @@ def patch(path, old, new):
         return {"success": False, "error": "not found"}
     if _m.is_dir(fp):
         return {"success": False, "error": "is a directory"}
-    if _m.stat_size(fp) > _m.TOOL_CONTENT_MAX:
+    if _m.stat_size(fp) > _m.TOOL_FILE_MAX:
         return {"success": False,
                 "error": "file too large for patch (%dB, max %dB) - read it "
                          "in slices and rewrite via write_file"
-                         % (_m.stat_size(fp), _m.TOOL_CONTENT_MAX)}
-    res, err, _ = _m.read_text(n, _m.TOOL_CONTENT_MAX + 1)
+                         % (_m.stat_size(fp), _m.TOOL_FILE_MAX)}
+    res, err, _ = _m.read_text(n, _m.TOOL_FILE_MAX + 1)
     if err:
         return {"success": False, "error": err}
     cur = res["content"]
@@ -62,14 +62,14 @@ def patch(path, old, new):
         nbytes = len(after.encode("utf-8"))
     except Exception:
         nbytes = len(after)
-    if nbytes > _m.TOOL_CONTENT_MAX:
+    if nbytes > _m.TOOL_FILE_MAX:
         return {"success": False,
                 "error": "patched file too large (%dB, max %dB) - use a "
-                         "smaller span" % (nbytes, _m.TOOL_CONTENT_MAX)}
+                         "smaller span" % (nbytes, _m.TOOL_FILE_MAX)}
     bk = _cp.backup(n)
     if not bk.get("success") and _m.is_dir(_m.full(n)) is False:
         return {"success": False, "error": bk.get("error", "backup failed")}
-    err = _m.write_text(n, after, _m.TOOL_CONTENT_MAX)
+    err = _m.write_text(n, after, _m.TOOL_FILE_MAX)
     if err:
         return {"success": False, "error": err}
     return {"success": True, "path": "/" + n, "size": nbytes,
@@ -92,12 +92,13 @@ TOOL = {
     "name": "patch_file",
     "ui_hint": "Patch one unique span of a workspace/ file (.bak first)",
     "description": ("Patch one span of a workspace file (opt/data/workspace/, "
-                    "shown as /workspace/ in Files): {path, old, new} "
+                    "shown as /workspace/ in Files; bare names and "
+                    "workspace/... map there): {path, old, new} "
                     "where old is a short substring occurring EXACTLY once "
                     "(read the file first, copy verbatim; widen the span "
                     "when told it is ambiguous). A .bak checkpoint is kept "
                     "first. Same managed-state refusals as write_file. "
-                    "Files over 4KB cannot be patched — rewrite instead."),
+                    "Files over 16KB cannot be patched — rewrite instead."),
     "parameters": {
         "type": "object",
         "properties": {

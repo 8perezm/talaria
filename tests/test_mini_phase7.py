@@ -171,10 +171,10 @@ def test_read_slice_offsets(tmp_path, monkeypatch):
     assert r["content"] == "" and r["truncated"] is True  # past EOF
     assert read_file.read("alpha.txt", -1, 4)["success"] is False
     assert read_file.read("alpha.txt", 0, 0)["success"] is False
-    r = read_file.read("alpha.txt")  # defaults offset=0 limit=2048
-    assert r["success"] and r["limit"] == 2048
-    r = read_file.read("alpha.txt", 0, 99999)  # clamped to 4096
-    assert r["success"] and r["limit"] == 4096
+    r = read_file.read("alpha.txt")  # defaults offset=0, whole-file limit
+    assert r["success"] and r["limit"] == fsutil.READ_SLICE_DEFAULT
+    r = read_file.read("alpha.txt", 0, 99999)  # clamped
+    assert r["success"] and r["limit"] == fsutil.READ_SLICE_MAX
     assert read_file.read("missing.txt")["success"] is False
     assert read_file.read("../evil")["success"] is False  # root jail
     s = agent_tools.execTool("read_file", {"path": "alpha.txt",
@@ -271,13 +271,13 @@ def test_patch_unique_ambiguous(tmp_path, monkeypatch):
 
 def test_patch_size_caps(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    _write("fat.txt", "y" * 5000)
+    _write("fat.txt", "y" * 20000)
     r = patch_file.patch("fat.txt", "y", "z")
     assert r["success"] is False and "too large" in r["error"]
-    assert fsutil.write_text("edge.txt", "a" + "b" * 4094) == ""  # 4095B
-    r = patch_file.patch("edge.txt", "a", "ac")  # -> 4096B: fits exactly
-    assert r["success"] is True and r["size"] == 4096
-    r = patch_file.patch("edge.txt", "ac", "acd")  # -> 4097B: refused
+    assert fsutil.write_text("edge.txt", "a" + "b" * (fsutil.TOOL_FILE_MAX - 2)) == ""
+    r = patch_file.patch("edge.txt", "a", "ac")  # fits exactly
+    assert r["success"] is True and r["size"] == fsutil.TOOL_FILE_MAX
+    r = patch_file.patch("edge.txt", "ac", "acd")  # one byte over: refused
     assert r["success"] is False and "too large" in r["error"]
 
 
@@ -415,9 +415,21 @@ def test_search_hits_caps_binary_jail(tmp_path, monkeypatch):
     assert search_files.search("x" * 121)["success"] is False
     assert search_files.search("hello", "../")["success"] is False
     assert search_files.search("hello", "/missing")["success"] is False
-    s = agent_tools.execTool("search_files", {"pattern": "foo"})
+    # The tool defaults to the user-data home, not the whole flash.
+    assert fsutil.write_text("opt/data/work/w.py", "tool foo here\n") == ""
+    s = agent_tools.execTool("search_files", {"pattern": "tool foo"})
     d = json.loads(s)
-    assert d["success"] and d["matches"][0]["file"] == "/a/x.py"
+    assert d["success"] and d["root"] == "/opt/data"
+    assert [m["file"] for m in d["matches"]] == ["/opt/data/work/w.py"]
+    # An explicit "/" still reaches the flash root...
+    d = json.loads(agent_tools.execTool(
+        "search_files", {"pattern": "foo", "root": "/"}))
+    assert any(m["file"] == "/a/x.py" for m in d["matches"])
+    # ...but never hands secrets back.
+    _write("config.yaml", "api_key: LEAKME\n")
+    d = json.loads(agent_tools.execTool(
+        "search_files", {"pattern": "LEAKME", "root": "/"}))
+    assert d["success"] is True and d["count"] == 0
 
 
 def test_search_hit_cap_and_oversize_skip(tmp_path, monkeypatch):
@@ -441,6 +453,16 @@ def test_prompt_mentions_file_tools_bounded(tmp_path, monkeypatch):
     assert "read_file" in p and "patch_file" in p
     assert "search_files" in p and "write_file" in p
     assert len(p) < 6000  # total prompt must not grow unbounded
+
+
+def test_prompt_teaches_chunked_writes_and_run_script(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    p = prompt.buildMiniPrompt()
+    # The model needs to know how to build a script that cannot fit in one
+    # completion, and that scripts can import the device's screen modules.
+    for mark in ("run_script", "append=true", "opt/data/workspace/",
+                 "screen", "epd"):
+        assert mark in p, mark
 
 
 # ---- delegation parity (server wrappers share fsutil) ----

@@ -260,6 +260,36 @@ def _fetch(url):
     return None, "too many redirects"
 
 
+def fetch_raw(url):
+    """GET a URL for on-device scripts: return the body bytes.
+
+    Follows redirects, decodes chunked bodies and raises OSError on HTTP
+    errors. The model-facing tool strips HTML to text; a script usually wants
+    the JSON body instead:
+
+        from tools.tool_web_fetch import fetch_raw
+        body = fetch_raw("https://api.open-meteo.com/v1/forecast?...")
+        data = json.loads(body.decode())
+    """
+    cur = str(url or "").strip()
+    for _hop in range(_MAX_REDIRECTS + 1):
+        status, headers, body = _http_get(cur)
+        if status in (301, 302, 303, 307, 308):
+            loc = headers.get(b"location") or headers.get(b"Location") or b""
+            if isinstance(loc, bytes):
+                loc = loc.decode("utf-8", "ignore")
+            if not loc:
+                raise OSError("HTTP %d without Location" % status)
+            cur = _resolve_redirect(cur, loc)
+            continue
+        if b"chunked" in headers.get(b"transfer-encoding", b"").lower():
+            body = _dechunk(body)
+        if status < 200 or status >= 300:
+            raise OSError("HTTP %d" % status)
+        return body[:_MAX_BODY]
+    raise OSError("too many redirects")
+
+
 def _run(args):
     out = {}
     url = str(args.get("url", "") if isinstance(args, dict) else "").strip()

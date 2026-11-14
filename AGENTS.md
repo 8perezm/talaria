@@ -10,9 +10,12 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   cycles (flash, copy files, reset, HTTP checks) without asking permission
   each time. Only ask the human for a physical action (RESET button press,
   re-plugging USB) and batch those requests.
-- **Device URL: `http://192.168.5.56/`** (STA on home WiFi; DHCP — if it stops
-  responding, re-check the boot log / COM ports, the IP may have moved).
-  Use it directly instead of asking the user for the address each time.
+- **Device URL: DHCP on home WiFi — never hardcode one.** Read the
+  `WiFi OK: <ip>` line from the serial boot log (last seen `192.168.5.29` on
+  2026-11-13; the lease has moved several times, so an address written down
+  in a doc or script goes stale). If the device stops responding over HTTP,
+  re-check the boot log / COM ports and the new lease before assuming the
+  board is down.
 - **Device password (auth token): `testtest`** — send as
   `Authorization: Bearer testtest` (or `X-Auth-Token: testtest`) on all
   `/api/*` and `/update` calls; the browser UI stores it in localStorage.
@@ -365,6 +368,114 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   and `test_login_gate_shape` in `tests/test_spa.py` (`/login` is a utility
   route, exempt from nav parity like `/setup`).
 
+## Agent loop budgets + on-device scripting (2026-11-13)
+
+- **`agent.max_tokens` is the tool-loop completion budget** (Config → Agent,
+  default 4000, clamped 512–8192). The 800-token chat budget is unchanged and
+  separate. Tool arguments (i.e. the file content a `write_file`/`patch_file`
+  call carries) and reasoning tokens come out of the same allowance, so 800
+  made a multi-KB script impossible; a truncated response used to be parsed
+  with `json.loads` → `{}` and looked like a bogus "invalid path".
+  `callLLMWithTools` now checks `finish_reason == "length"`: truncated tool
+  arguments are never executed and come back as an explicit "cut off at
+  max_tokens=N … use write_file append=true" tool result; a truncated plain
+  answer returns an ERROR (or is marked `[truncated: …]`).
+- **No shared tool budget.** The old `_elapsed() > 25000` check skipped every
+  tool after a slow one in the same round and still added the name to
+  `toolsLog` (so the UI chips lied). Each call now gets its own measured
+  `TOOL_CALL_SLOW_MS` (30 s, advisory — MicroPython cannot preempt a running
+  function); an overrun adds `slow_tool`/`elapsed_ms` to the result and the
+  rest of the round still runs.
+- **Chunked writes:** `write_file {path, content, append=false}` accepts
+  ≤`TOOL_CONTENT_MAX` (4096 B) per call and assembles up to
+  `TOOL_FILE_MAX` (16 KB) with `append=true`; `patch_file` works on files up
+  to 16 KB; `run_script`'s source cap is 16 KB too. `write_file` skips the
+  `.bak` on appends (the prefix is already in the file).
+- **Workspace path resolution** (`fsutil.tool_path`), shared by read/write/
+  patch/search: `workspace/x` → `opt/data/workspace/x`; a bare new `x.py`
+  (no root file of that name) → the workspace, so it matches `run_script`'s
+  bare-name rule; existing root entry points (`main.py`, `boot.py`) and
+  `app/`, `www/` paths keep their full-flash meaning. `search_files` defaults
+  its root to `opt/data` (pass `root:"/"` for the whole flash) and
+  `grep_files` now applies `read_refusal`, so `config.yaml`/`tg.json` lines
+  can never be returned to the model.
+- **`run_script` execution:** the script runs as `__main__` with `__file__`
+  set, `print()` (sep/end honoured) and `sys.stdout` are captured, and a
+  failure returns the last 600 B of pre-crash output with the exception.
+  This is what lets the agent build a dashboard script in chunks, run it, and
+  debug a traceback without a REPL.
+- **Built-in screen skill:** `app/builtin_skills.py` ships the `/app/screen.py`
+  + `/app/epd.py` API guide (960×540, framebuf, `epd.update(MODE_GC16)`,
+  `fetch_raw`). `skillstore.ensure_builtin()` installs it once per
+  `BUILTIN_VERSION` (marker `opt/data/skills/.builtin`), never overwrites a
+  user copy, and leaves a deleted one deleted. It is called from
+  `initAgentFS()`. Bump `BUILTIN_VERSION` to ship a revised guide.
+- `tools/tool_web_fetch.py` exposes `fetch_raw(url)` for scripts (raw body,
+  redirects/chunking handled, ≤8 KB) because the model-facing tool strips
+  HTML and caps at 2000 chars — fine for reading a page, useless for JSON.
+- Pinned by `tests/test_agent_budget.py`, `tests/test_write_append.py`,
+  `tests/test_skills_builtin.py`, `tests/test_run_script.py` and the updated
+  file/search/config/prompt cases.
+
+## Why the dashboard never got built (2026-11-13, field notes)
+
+Five separate failures stacked up; all are now fixed except the last, which is
+a hardware/buffer limit:
+
+1. **`epd.update()` was never called.** A generated script drew the whole
+   framebuffer and then simply ended (117 lines, no update) - the panel keeps
+   the old image, so it looks like nothing ran. The skill now states this is
+   the #1 failure and that a script must end with `epd.update(...)` plus a
+   `print`.
+2. **The 45s response timeout was too short for tool arguments.** Reasoning
+   models emitting a 3-4KB `write_file` payload routinely exceed it, so the
+   one round that had to write the script got `ETIMEDOUT` on all 4 tries and
+   the turn ended in prose ("the code was drafted"). The tool loop now uses
+   `_LLM_AGENT_TIMEOUT` (110s, 2 tries) via `_call_timeout`/`_call_tries`,
+   read by `postLLM`/`_post_raw`; plain chat keeps 45s.
+3. **The agent could not see its own work.** No workspace listing existed, so
+   a new turn re-read the skill, re-fetched the data and rewrote a 15-byte
+   `// placeholder`. `prompt.buildMiniPrompt` now appends "Your workspace
+   already contains: name (size), ..." (12 entries), and the session log
+   carries a compact `t` trace ("write_file -> ...") that `injectRecentLog`
+   replays as a system note.
+4. **3 iterations were not enough** for read-skill + fetch + write chunks +
+   run. Default is now 5, ceiling 8 (`config.DEFAULT_AGENT_MAX_ITERS`,
+   `AGENT_MAX_ITERS_MAX`). A 15KB request body is the floor even with an empty
+   session, so the schema is the real constraint, not history.
+5. **`epd.init()` costs ~1MB per call and it is never returned.** Measured on
+   the bench board: 3,799,536 -> 2,800,656 -> 1,751,552 bytes across two
+   draws; a third `init()` hard-faults and reboots the board. `epd.deinit()`
+   does NOT free it (measured: 16 bytes) but DOES fix the socket: without it,
+   every 15KB LLM POST fails with ETIMEDOUT while a small `/api/debug-raw`
+   succeeds; after `deinit` chat answers in ~19-25s at the same
+   `gc.mem_free()`. A plain 1MB bytearray does not break TLS, so this is
+   driver state, not heap pressure.
+   - `run_script` therefore calls `_release_panel()` after every script
+     (`import epd` then `deinit`, then `gc`). The import matters: the frozen
+     `epd` is NOT in `sys.modules` (`"epd" in sys.modules` -> False even
+     after import), so a `sys.modules` lookup silently did nothing.
+   - Budget **at most two draws per boot**. A third `epd.init()` panics.
+     e-paper keeps its image across a reboot, so the safe pattern for a
+     scheduled refresh is draw-then-reboot, or reboot before a redraw.
+   - The driver source is not in this repo (no C sources outside
+     `reference/`), so freeing the buffer needs a firmware change upstream.
+   - Host-side measurement confirmed the provider is not at fault (17KB body,
+     same key/model, returns in ~1s from the PC).
+
+`workspace/weather5.py` (5112B) is the dashboard the board produced and
+debugged entirely on its own after these fixes: it read the skill, fetched
+Open-Meteo, wrote 3 chunks, ran it, hit `'module' object has no attribute
+'strftime'` (MicroPython has no `strftime`), patched in an `hhmm()` helper,
+re-ran, and reported `start / fetched 5 days / today drawn / panel updated`.
+That is the end-to-end proof - no host-side scripting involved.
+`agent.max_iters` is set to 12 on this board (it used 9-10 rounds).
+
+`skillstore.ensure_builtin` now records `{v, h}` in `opt/data/skills/.builtin`
+(version + hash of each copy it wrote) so a `BUILTIN_VERSION` bump can replace
+an untouched builtin while leaving an edited copy alone. A legacy bare-version
+marker migrates by replacing the body once.
+
 ## Deploy flow that works
 
 1. Use the SERIAL port (`COM11` last seen — verify, it moves; the CLI
@@ -401,8 +512,8 @@ Target board on the bench: ESP32-S3, 16MB flash, 8MB embedded PSRAM, native USB.
   patience on two consecutive physical actions — combine everything into what
   follows a single press.
 - Keep responses short. Narrate state changes and next physical step only.
-- The device is currently healthy on home WiFi `192.168.5.56` (STA), endpoint
-  `https://api.deepinfra.com/v1/openai`, model
+- The device is currently healthy on home WiFi (STA, DHCP — read the IP from
+  the boot log), endpoint `https://api.deepinfra.com/v1/openai`, model
   `deepseek-ai/DeepSeek-V4.1-Flash-1017`, auth token enabled. Don't wipe
   `config.yaml`.
 

@@ -47,8 +47,12 @@ NAME_MAX = 60  # optional job display label (Hermes "Name (optional)")
 SKILLS_MAX = 8  # attached skills per job (each <=3KB in skillstore)
 PREFIX_MAX = 1000  # skills context prefix cap (prompt keeps the rest)
 READ_CAP = 12288  # cron.json bound (5 jobs x ~1.5KB prompt + envelope)
-SCRIPT_MAX = 8192  # cron script source cap (bounds exec RAM on device)
+SCRIPT_MAX = 16384  # cron script source cap (bounds exec RAM on device)
 SCRIPT_OUT_MAX = 1000  # captured print() output cap per script run
+# epd.init() takes ~1MB and never returns it, so a third draw in one boot
+# hard-faults the board (measured: 3.80M -> 2.80M -> 1.75M -> panic). Refuse
+# with an actionable error instead of taking the server down.
+PANEL_MIN_FREE = 2200000
 
 _POST_HANDSHAKE_TIMEOUT = 5
 _POST_TIMEOUT = 10
@@ -324,6 +328,50 @@ def _script_display(norm):
             return "/workspace/"
 
 
+def _uses_panel(src):
+    """True when the source is likely to allocate the e-paper framebuffer."""
+    try:
+        return ("epd" in src) or ("paneltext" in src) or ("screen." in src)
+    except Exception:
+        return False
+
+
+def _release_panel():
+    """Release the panel after a script so outbound TLS keeps working.
+
+    `epd.init()` leaves the driver holding its ~1MB of display buffers. While
+    they are held, a 15KB LLM POST fails with ETIMEDOUT on every try (while a
+    small `/api/debug-raw` request still succeeds) and the device only
+    recovers after a reboot. `epd.deinit()` fixes it immediately: measured
+    19s chat right after deinit at the same gc.mem_free(). The buffers are
+    NOT counted in gc.mem_free(), and a plain 1MB bytearray does not
+    reproduce the fault, so this is the driver's state, not heap pressure.
+    An e-paper panel keeps its image when deinitialised.
+
+    The module is frozen and is NOT in sys.modules, so it must be imported
+    here - a sys.modules lookup silently skipped this and looked like deinit
+    did not work. Best-effort, never raises.
+    """
+    try:
+        import epd
+    except Exception:
+        epd = None
+    if epd is not None:
+        for fn in ("deinit", "poweroff"):
+            try:
+                f = getattr(epd, fn, None)
+                if f is not None:
+                    f()
+                    break
+            except Exception:
+                pass
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+
+
 def _run_script(norm):
     """Exec a workspace .py file, capture print() output.
 
@@ -352,19 +400,88 @@ def _run_script(norm):
             return False, "script is empty"
     except Exception:
         return False, "script is empty"
-    lines = []
+    if _uses_panel(src):
+        try:
+            import gc
+            free = gc.mem_free()
+        except Exception:
+            free = 0
+        if free and free < PANEL_MIN_FREE:
+            return False, (
+                "panel memory exhausted (%d bytes free). The e-paper driver "
+                "takes ~1MB per draw and does not return it, so this board "
+                "allows two draws per boot. Reboot first (restart_device or "
+                "the Restart button) - the panel keeps its image - then run "
+                "the script again." % free)
+    parts = []
 
     def _emit(*a, **k):
         try:
-            lines.append(" ".join(str(x) for x in a))
+            sep = k.get("sep", " ")
+            if sep is None:
+                sep = " "
+            end = k.get("end", "\n")
+            if end is None:
+                end = "\n"
+            parts.append(sep.join(str(x) for x in a) + end)
         except Exception:
             pass
 
+    class _Stdout:
+        """Capture sys.stdout writes (print() is already redirected)."""
+        def write(self, s):
+            try:
+                parts.append(str(s))
+            except Exception:
+                pass
+
+        def flush(self):
+            pass
+
+    # Scripts are top-level programs: give them the usual __name__/__file__
+    # so `if __name__ == "__main__": main()` works. The globals dict has no
+    # module of its own, so these are normally undefined.
     try:
-        exec(src, {"print": _emit})
+        _disp = _script_display(norm)
+    except Exception:
+        _disp = "/" + norm
+    env = {"print": _emit, "__name__": "__main__", "__file__": _disp}
+    import sys
+    prev_out = None
+    try:
+        prev_out = sys.stdout
+    except Exception:
+        prev_out = None
+    try:
+        sys.stdout = _Stdout()
+    except Exception:
+        pass
+    try:
+        exec(src, env)
     except Exception as e:
-        return False, "exec failed: %s" % str(e)[:200]
-    out = "\n".join(lines)
+        # Keep the breadcrumbs the script printed before it failed: they are
+        # often the only clue when a panel init or a fetch dies.
+        tail = "".join(parts)
+        if len(tail) > 600:
+            tail = tail[-600:]
+        msg = "exec failed: %s" % str(e)[:200]
+        if tail:
+            msg += "\noutput:\n" + tail
+        return False, msg
+    finally:
+        if prev_out is not None:
+            try:
+                sys.stdout = prev_out
+            except Exception:
+                pass
+        # Runs on success and failure: a script that crashed after epd.init()
+        # must not leave the board unable to answer the next chat turn.
+        _release_panel()
+    out = "".join(parts)
+    # Preserve the historical tool contract: print() lines joined by newlines,
+    # no trailing newline at the end of the captured output.
+    while out.endswith("\n") or out.endswith("\r"):
+        out = out[:-1]
     if len(out) > SCRIPT_OUT_MAX:
         out = out[:SCRIPT_OUT_MAX]
     return True, out

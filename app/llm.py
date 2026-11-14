@@ -7,8 +7,30 @@ except ImportError:
 
 
 _LLM_TIMEOUT = 45
+# The agentic loop generates tool arguments (file content), not prose. A
+# reasoning model can spend well over 45s on a 3-4KB write_file payload, and
+# that was the real reason a dashboard script never got written: the cheap
+# skill_view/web_fetch rounds answered in time, the one round that had to
+# emit the code hit ETIMEDOUT four times and the turn ended in prose.
+_LLM_AGENT_TIMEOUT = 110
+_LLM_AGENT_TRIES = 2
+# Per-call overrides read by postLLM (None = the chat defaults). Set by the
+# tool loop only; keeping them off the signature means existing postLLM
+# callers and test stubs stay valid.
+_call_timeout = None
+_call_tries = None
 _LLM_TRIES = 4
 _LLM_HANDSHAKE_TIMEOUT = 8
+
+# The agentic loop's completion budget (Config -> Agent -> Max output tokens).
+# The chat reply path keeps its small 800-token budget; tool calls need room
+# for the arguments string, which is where file content lives.
+_DEFAULT_AGENT_MAX_TOKENS = 4000
+# Advisory per-call budget. MicroPython cannot preempt a running function, so
+# a slow tool is measured and annotated, never killed or allowed to skip the
+# rest of the round (the old shared 25s cutoff silently dropped requested
+# tools and still listed them as used).
+TOOL_CALL_SLOW_MS = 30000
 
 
 def _ticks_ms():
@@ -30,6 +52,34 @@ def _ticks_diff(a, b):
         pass
     return a - b
 _LLM_MAX_BODY = 16384
+
+
+def _agent_max_tokens():
+    """Tool-loop completion budget from Config, clamped to the schema range."""
+    try:
+        import config
+        n = int(getattr(config, "agent_max_tokens",
+                        _DEFAULT_AGENT_MAX_TOKENS))
+    except Exception:
+        n = _DEFAULT_AGENT_MAX_TOKENS
+    if n < 512:
+        n = 512
+    if n > 8192:
+        n = 8192
+    return n
+
+
+def _slow_tool_note(res, name, ms):
+    """Append a measured overrun to a tool result without breaking its JSON."""
+    try:
+        obj = json.loads(res)
+        if isinstance(obj, dict):
+            obj["elapsed_ms"] = ms
+            obj["slow_tool"] = True
+            return json.dumps(obj)
+    except Exception:
+        pass
+    return "%s\n[tool %s took %dms]" % (res, name, ms)
 
 
 def _split_url(url):
@@ -123,14 +173,21 @@ def _send_all(s, buf):
         sent += n
 
 
-def _post_raw(url, reqBody, headers, timeout=_LLM_TIMEOUT, tries=_LLM_TRIES):
+def _post_raw(url, reqBody, headers, timeout=None, tries=None):
     """Raw-socket POST with explicit timeouts (urequests has none on MicroPython).
 
     HTTP/1.0 so the server sends Content-Length instead of chunked encoding.
     Handshake gets a short budget (normally 1-3s); response gets `timeout`.
     Retries whole attempt: TLS handshakes to some edges hang intermittently.
     Returns (True, text, code) or (False, err, 0).
+
+    `timeout`/`tries` default to the per-call overrides set by the tool loop
+    (`_call_timeout`/`_call_tries`), else the chat defaults.
     """
+    if timeout is None:
+        timeout = _call_timeout or _LLM_TIMEOUT
+    if tries is None:
+        tries = _call_tries or _LLM_TRIES
     try:
         is_https, host, port, path = _split_url(url)
     except Exception as e:
@@ -588,12 +645,98 @@ def _headers_for(api_key, stream=False):
     return headers
 
 
+# The request body must stay small enough for the device's TLS stack to POST
+# reliably. Measured: 25-29KB usually succeeds, 30-33KB starts timing out
+# (the provider answers a 17KB body in ~1s from a PC, so this is the board).
+# Baseline prompt+tools is already ~12KB, so old tool results are dropped
+# rather than truncated - truncating to a few hundred chars made the model
+# re-read the same file six times and rebuilding the body never converged.
+BODY_BUDGET = 26000
+
+
+def _encode_request(req, msgs, budget=BODY_BUDGET):
+    """json.dumps(req), dropping the oldest tool results until it fits."""
+    try:
+        body = json.dumps(req)
+    except Exception:
+        return None
+    if len(body) <= budget:
+        return body
+    dropped = 0
+    for m in msgs:
+        try:
+            if m.get("role") != "tool":
+                continue
+            if len(m.get("content") or "") <= 400:
+                continue
+            m["content"] = ("[dropped to fit the request size limit - "
+                            "read the file again if you still need it]")
+            dropped += 1
+            body = json.dumps(req)
+            if len(body) <= budget:
+                break
+        except Exception:
+            continue
+    if dropped:
+        print("[agent] dropped %d old tool result(s), body=%dB"
+              % (dropped, len(body)))
+    return body
+
+
+def _gc_collect():
+    """Reclaim a tool round's garbage before the next TLS POST.
+
+    Each heavy iteration (a 4KB write_file payload plus its results) leaves
+    roughly 1MB allocated on this board; after a few turns mbedTLS can no
+    longer find a contiguous buffer and every POST returns ETIMEDOUT while a
+    trivial request still succeeds. One collect per round is cheap and keeps a
+    long build/run turn from starving the socket.
+    """
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+
+
+def _compact_trace(toolSummary):
+    """One-line 'tool -> outcome' trace for the session log (<=400 chars).
+
+    Only the final assistant text is persisted, so the next turn used to have
+    no idea which tools ran or which files were written - the agent would
+    re-read the skill and re-fetch the same data instead of continuing its own
+    work. This trace is injected back as a system note.
+    """
+    if not toolSummary:
+        return ""
+    out = []
+    for line in toolSummary.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if ":" in line:
+            nm, res = line.split(":", 1)
+        else:
+            nm, res = line, ""
+        out.append("%s -> %s" % (nm.strip(), res.strip()[:90]))
+        if len(out) >= 4:
+            break
+    text = "; ".join(out)
+    return text[:400]
+
+
 def postLLM(reqBody):
     """POST chat/completions. Returns (ok, resp_text, code).
 
     Tries the primary provider, then once the fallback (if configured).
     Failover on transport failure, HTTP 429, HTTP 5xx. Other statuses
     (incl. 401) and bad JSON return immediately, as before.
+
+    The tool loop sets `_call_timeout`/`_call_tries` before each call: a
+    reasoning model emitting a multi-KB write_file argument needs longer than
+    a short chat reply, and the old fixed 45s ceiling made every "now write
+    the script" round fail with ETIMEDOUT while the cheap skill_view and
+    web_fetch rounds sailed through.
     """
     import config
     try:
@@ -708,19 +851,21 @@ def callLLMWithTools(userMsg, history=None, out=None, max_iters=None,
         try:
             max_iters = int(config.agent_max_iters)
         except Exception:
-            max_iters = 3
+            max_iters = 8
     try:
         max_iters = int(max_iters)
     except Exception:
-        max_iters = 3
+        max_iters = 8
     if max_iters < 1:
         max_iters = 1
-    if max_iters > 5:
-        max_iters = 5
+    if max_iters > 12:
+        max_iters = 12
     history = history or []
     if not config.cfgEndpoint:
         return "ERROR: agent endpoint not configured. Open /agent."
-    req = {"model": config.cfgModel, "temperature": 0.7, "max_tokens": 800,
+    _max_tokens = _agent_max_tokens()
+    req = {"model": config.cfgModel, "temperature": 0.7,
+           "max_tokens": _max_tokens,
            "stream": False, "messages": []}
     msgs = req["messages"]
     msgs.append({"role": "system", "content": _build_prompt()})
@@ -738,13 +883,22 @@ def callLLMWithTools(userMsg, history=None, out=None, max_iters=None,
     finalText = ""
     finalReason = ""
     sawHttpFail = False
+    reads = {}
     for it in range(max_iters):
+        _gc_collect()
         try:
-            body = json.dumps(req)
+            body = _encode_request(req, msgs)
+            if body is None:
+                raise ValueError("encode failed")
         except Exception as e:
             return "ERROR: json encode: %s" % str(e)[:120]
         print("[agent] iter%d body=%dB msgs=%d" % (it, len(body), len(msgs)))
-        ok, resp, code = postLLM(body)
+        global _call_timeout, _call_tries
+        _call_timeout, _call_tries = _LLM_AGENT_TIMEOUT, _LLM_AGENT_TRIES
+        try:
+            ok, resp, code = postLLM(body)
+        finally:
+            _call_timeout, _call_tries = None, None
         if not ok:
             if it > 0 and toolSummary:
                 sawHttpFail = True
@@ -766,7 +920,9 @@ def callLLMWithTools(userMsg, history=None, out=None, max_iters=None,
                 break
             return "ERROR: bad JSON from endpoint."
         try:
-            msg0 = res["choices"][0]["message"]
+            choice0 = res["choices"][0]
+            msg0 = choice0["message"]
+            finish0 = choice0.get("finish_reason") or ""
         except Exception:
             return "ERROR: empty reply from model."
         calls = msg0.get("tool_calls")
@@ -800,6 +956,19 @@ def callLLMWithTools(userMsg, history=None, out=None, max_iters=None,
                 finalReason += rR
             elif rD:
                 finalReason += rD
+            if finish0 == "length":
+                # The completion was cut off by max_tokens. Never present a
+                # partial answer (or a reasoning fragment) as the final reply.
+                limit_msg = ("output hit the %d-token limit (agent.max_tokens)"
+                             % _max_tokens)
+                if finalText:
+                    finalText = pendingPrefix + finalText + \
+                        "\n\n[truncated: %s]" % limit_msg
+                else:
+                    return ("ERROR: the model stopped at the %d-token output "
+                            "limit before replying. Raise agent.max_tokens in "
+                            "Config or ask for a smaller step." % _max_tokens)
+                break
             if pendingPrefix and finalText:
                 finalText = pendingPrefix + finalText
             break
@@ -849,33 +1018,59 @@ def callLLMWithTools(userMsg, history=None, out=None, max_iters=None,
                              "function": {"name": nm, "arguments": ag}}
                             for (cid, nm, ag) in call_list]
         msgs.append(am)
-        import time
-        t0 = time.ticks_ms() if hasattr(time, "ticks_ms") else 0
-
-        def _elapsed():
-            try:
-                return time.ticks_diff(time.ticks_ms(), t0)
-            except Exception:
-                return 0
-        for idx2, (cid, nm, ag) in enumerate(call_list):
+        for cid, nm, ag in call_list:
             if not agent_tools.toolEnabled(nm):
                 msgs.append({"role": "tool", "tool_call_id": cid,
                              "content": '{"error":"tool disabled in /functions"}'})
                 toolsLog += nm + "(disabled) "
                 toolSummary += nm + ": disabled\n"
                 continue
-            if idx2 > 0 and _elapsed() > 25000:
-                res2 = '{"error":"tool time budget (25s) exceeded, skipped"}'
-                print("[tool] %s SKIPPED (budget)" % nm)
+            # Validate the arguments before dispatch. A truncated tool call
+            # used to become `{}` and surface as a misleading "invalid path"
+            # (or ran the wrong default); say exactly what happened instead.
+            try:
+                ad = json.loads(ag) if ag else {}
+                if not isinstance(ad, dict):
+                    raise ValueError("arguments must be an object")
+            except Exception:
+                why = "not valid JSON"
+                if finish0 == "length":
+                    why = ("cut off at max_tokens=%d (finish_reason=length)"
+                           % _max_tokens)
+                res2 = json.dumps({
+                    "error": ("tool arguments were %s; nothing was run. "
+                              "Retry with a smaller call - write large files "
+                              "in chunks with write_file append=true."
+                              % why)})
+                print("[tool] %s bad args: %s" % (nm, why))
             else:
-                try:
-                    ad = json.loads(ag) if ag else {}
-                    if not isinstance(ad, dict):
-                        ad = {}
-                except Exception:
-                    ad = {}
-                res2 = agent_tools.execTool(nm, ad)
-                print("[tool] %s -> %s" % (nm, res2[:120]))
+                # Repeated reads on one path are a loop, not progress: the
+                # model pages the same file until the iteration budget is
+                # gone and never writes the change. Two slices is enough for
+                # any tool-sized file; force it to act on what it has.
+                path = str(ad.get("path", "")) if nm == "read_file" else ""
+                if path and reads.get(path, 0) >= 2:
+                    res2 = json.dumps({
+                        "error": ("read_file has already returned %d slices of "
+                                  "'%s' this turn. Stop paging: use the content "
+                                  "you have, patch the specific line with "
+                                  "patch_file, or rewrite the file with "
+                                  "write_file." % (reads[path], path))})
+                    print("[tool] read_file loop on %s" % path)
+                else:
+                    if path:
+                        reads[path] = reads.get(path, 0) + 1
+                    t_tool = _ticks_ms()
+                    res2 = agent_tools.execTool(nm, ad)
+                    ms = _ticks_diff(_ticks_ms(), t_tool)
+                    if ms > TOOL_CALL_SLOW_MS:
+                        # No preemption on MicroPython: the call has finished
+                        # by now. Annotate it, then keep running the rest of
+                        # the round - every requested tool gets its own budget.
+                        print("[tool] %s slow: %dms" % (nm, ms))
+                        res2 = _slow_tool_note(res2, nm, ms)
+                    else:
+                        print("[tool] %s -> %s" % (nm, res2[:120]))
             msgs.append({"role": "tool", "tool_call_id": cid, "content": res2, "name": nm})
             toolsLog += nm + " "
             toolSummary += "%s: %s\n" % (nm, res2[:400])
@@ -899,10 +1094,12 @@ def callLLMWithTools(userMsg, history=None, out=None, max_iters=None,
         finalText = "(tool run done, no text reply)"
     if len(finalText) > 3500:
         finalText = finalText[:3500]
+    trace = _compact_trace(toolSummary)
     if out is not None:
         out["reasoning"] = (finalReason or "")[:2500]
         out["tools_used"] = toolsLog
-    agent_tools.appendChatLog(userMsg, finalText, path=log_path)
+        out["tool_trace"] = trace
+    agent_tools.appendChatLog(userMsg, finalText, path=log_path, tools=trace)
     if agent_tools.gRestartPending:
         pass  # caller reboots after response
     return finalText

@@ -1,5 +1,5 @@
 # read_file.py — sliced file read (Mini Hermes Phase 7). Slot 19.
-# {path, offset=0, limit=2048} -> {content, size, truncated}. Single-pass
+# {path, offset=0, limit=4096} -> {content, size, truncated}. Single-pass
 # chunked reads (fsutil.read_slice) so big logs are pageable, never loaded
 # whole. Secrets (config.yaml/config.json/tg.json) and partial writes (*.tmp) are
 # REFUSED; .bak snapshots ARE readable (rollback inspection). Validation
@@ -10,9 +10,9 @@ except ImportError:
     import json
 
 
-def read(path, offset=0, limit=2048):
+def read(path, offset=0, limit=None):
     import fsutil as _m
-    n = _m.norm(path)
+    n = _m.tool_path(_m.norm(path))
     if n is None or not n:
         return {"success": False, "error": "invalid path"}
     rerr = _m.read_refusal(n)
@@ -44,7 +44,7 @@ def _run(args):
             args = {}
         return json.dumps(read(args.get("path", ""),
                                args.get("offset", 0),
-                               args.get("limit", 2048) if "limit" in args else 2048))
+                               args.get("limit", None)))
     except Exception as e:
         return json.dumps({"success": False,
                            "error": "read_file failed: %s" % str(e)[:120]})
@@ -55,7 +55,9 @@ TOOL = {
     "ui_hint": "Read a workspace file in slices (max 4KB per read)",
     "description": ("Read a workspace file (opt/data/workspace/, shown as "
                     "/workspace/ in Files: code, pages, logs) in slices: "
-                    "{path, offset=0, limit=2048, max 4096}. Returns "
+                    "{path, offset=0, limit=4096 (max 4096)}. Bare names and "
+                    "workspace/... mean opt/data/workspace/; other paths "
+                    "(app/, www/) are full-flash. Returns "
                     "{content, size, truncated} — page large files with "
                     "offset. Secrets (config.yaml, config.json, tg.json) and partial "
                     "writes (*.tmp) are refused; .bak snapshots are "

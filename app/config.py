@@ -48,7 +48,19 @@ cfgFallbackKey = ""
 cfgFallbackModel = ""
 cfgMdnsName = MDNS_NAME
 cfgApSsid = AP_SSID
-agent_max_iters = 3
+agent_max_iters = 8
+# A tool round trip is one model call. A real build needs read-skill +
+# fetch + 2-3 write chunks + run + fix + re-run (~8). The old 3 cut the turn
+# off mid-build and left a placeholder file on disk.
+DEFAULT_AGENT_MAX_ITERS = 8
+AGENT_MAX_ITERS_MAX = 12
+# Completion budget for one call in the agentic tool loop. 800 (the chat
+# reply budget) cannot carry a 4KB write_file/patch_file payload: the tool
+# arguments and any reasoning tokens come out of the same allowance.
+DEFAULT_AGENT_MAX_TOKENS = 4000
+AGENT_MAX_TOKENS_MIN = 512
+AGENT_MAX_TOKENS_MAX = 8192
+agent_max_tokens = DEFAULT_AGENT_MAX_TOKENS
 # Characters of each chat message kept in chatlog.jsonl and restored after a
 # page reload. 4000 covers a full 800-token reply (~6-7 paragraphs); the old
 # hard caps of 1500 (store) / 800 (restore) cut long answers in half.
@@ -127,15 +139,27 @@ def _write_file(path, text):
 # value clamps (shared with the REST API and the old flat save helpers)
 # ---------------------------------------------------------------------------
 
-def _clamp_iters(v, default=3):
+def _clamp_iters(v, default=DEFAULT_AGENT_MAX_ITERS):
     try:
         n = int(v)
     except Exception:
         return default
     if n < 1:
         return 1
-    if n > 5:
-        return 5
+    if n > AGENT_MAX_ITERS_MAX:
+        return AGENT_MAX_ITERS_MAX
+    return n
+
+
+def _clamp_tokens(v, default=DEFAULT_AGENT_MAX_TOKENS):
+    try:
+        n = int(v)
+    except Exception:
+        return default
+    if n < AGENT_MAX_TOKENS_MIN:
+        return AGENT_MAX_TOKENS_MIN
+    if n > AGENT_MAX_TOKENS_MAX:
+        return AGENT_MAX_TOKENS_MAX
     return n
 
 
@@ -336,6 +360,8 @@ def _value_for_key(key):
         return cfgApiKey
     if key == "agent.max_iters":
         return agent_max_iters
+    if key == "agent.max_tokens":
+        return agent_max_tokens
     if key == "fallback.endpoint":
         return cfgFallbackEndpoint
     if key == "fallback.model":
@@ -606,6 +632,7 @@ def _apply_doc(doc):
     """Load a normalized document into the module globals."""
     global cfgSsid, cfgPass, cfgEndpoint, cfgApiKey, cfgModel, cfgAuthToken
     global cfgFallbackEndpoint, cfgFallbackKey, cfgFallbackModel, agent_max_iters
+    global agent_max_tokens
     global cfgChatEntryChars, cfgChatLogMaxKB, cfgChatLogKeepKB, cfgChatRestoreTurns
     global cfgThemeScheme, cfgThemeFontHeaders, cfgThemeHeadersSize
     global cfgThemeFontBody, cfgThemeBodySize, cfgThemeFontMono, cfgThemeMonoSize
@@ -625,7 +652,10 @@ def _apply_doc(doc):
     cfgMdnsName = _mdns_name(schema.get_path(doc, "network.mdns_name", MDNS_NAME))
     cfgApSsid = _ap_ssid(schema.get_path(doc, "network.ap_ssid", AP_SSID))
     agent_max_iters = _clamp_iters(
-        schema.get_path(doc, "agent.max_iters", 3), 3)
+        schema.get_path(doc, "agent.max_iters", DEFAULT_AGENT_MAX_ITERS),
+        DEFAULT_AGENT_MAX_ITERS)
+    agent_max_tokens = _clamp_tokens(
+        schema.get_path(doc, "agent.max_tokens", DEFAULT_AGENT_MAX_TOKENS))
     cfgChatEntryChars = _clamp_chat_entry_chars(
         schema.get_path(doc, "chat.entry_chars", DEFAULT_CHAT_ENTRY_CHARS))
     cfgChatLogMaxKB = _clamp_chat_log_max_kb(

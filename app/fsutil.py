@@ -69,8 +69,9 @@ def read_jsonl_tail(path, max_lines=10, block_bytes=16384):
 
 # File-tool budgets (the 100KB/200KB Explorer caps do NOT apply to the tools;
 # small bounded caps keep tool results fittable in one turn).
-TOOL_CONTENT_MAX = 4096  # write_file content / patch_file file+result cap
-READ_SLICE_DEFAULT = 2048
+TOOL_CONTENT_MAX = 4096  # one tool call's payload (model output budget)
+TOOL_FILE_MAX = 16384    # assembled file cap for write_file append / patch
+READ_SLICE_DEFAULT = 4096
 READ_SLICE_MAX = 4096
 CHUNK = 2048  # copy/skip chunk (single-pass, low RAM)
 
@@ -148,6 +149,26 @@ def full(n, root=None):
     if base:
         return base if not n else base + "/" + n
     return "/" + n if n else "/"
+
+
+def tool_path(n):
+    """Resolve a file-tool path for the workspace script convention.
+
+    - 'workspace/x' and 'workspace/x.py' map to opt/data/workspace/x(.py).
+    - A bare 'x.py' maps to the workspace only when no root file of that
+      name exists. New scripts therefore land where run_script looks, while
+      repairs to root entry points (main.py, boot.py) still address the root.
+    - Everything else (app/..., www/..., non-.py bare names) is unchanged.
+    """
+    if not n:
+        return n
+    if n == "workspace":
+        return DATA_WORKSPACE
+    if n.startswith("workspace/"):
+        return DATA_WORKSPACE + n[len("workspace"):]
+    if "/" not in n and n.endswith(".py") and is_dir(full(n)) is None:
+        return DATA_WORKSPACE + "/" + n
+    return n
 
 
 def parent(n):
@@ -639,6 +660,7 @@ def grep_files(pattern, root="/", cap=SEARCH_MAX_HITS):
     if start is None:
         return {"success": False,
                 "error": "invalid root (never walks above /)"}
+    start = tool_path(start)
     disp = "/" + start if start else "/"
     fp0 = full(start)
     d0 = is_dir(fp0)
@@ -665,6 +687,8 @@ def grep_files(pattern, root="/", cap=SEARCH_MAX_HITS):
             break
         scanned += 1
         fp = full(fn)
+        if read_refusal(fn):
+            continue  # secrets / partial writes never reach the model
         if stat_size(fp) > SEARCH_MAX_FILE_BYTES:
             continue
         try:

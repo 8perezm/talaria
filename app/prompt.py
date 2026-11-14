@@ -57,6 +57,35 @@ def _now_str():
         return ""
 
 
+def _workspace_listing(max_items=12):
+    """'weather_panel.py (15B), probe.py (301B)' — bounded, best-effort.
+
+    Name + size only (no mtimes: one stat per entry is already the expensive
+    part on littlefs, and the model needs identity, not timestamps).
+    """
+    import fsutil as _fs
+    entries, err = _fs.list_dir(_fs.DATA_WORKSPACE)
+    if err or not entries:
+        return ""
+    out = []
+    for e in entries:
+        try:
+            name = e.get("name", "")
+        except Exception:
+            continue
+        if not name or name.startswith("."):
+            continue
+        try:
+            size = int(e.get("size", 0) or 0)
+        except Exception:
+            size = 0
+        out.append("%s (%dKB)" % (name, (size + 1023) // 1024)
+                   if size >= 1024 else "%s (%dB)" % (name, size))
+        if len(out) >= max_items:
+            break
+    return ", ".join(out)
+
+
 def buildMiniPrompt():
     """Assemble the system prompt in tiers. Returns a single string.
 
@@ -95,12 +124,27 @@ def buildMiniPrompt():
                  "scheduled work, or fresh internet "
                  "data. Never guess pin levels or current events. ")
     parts.append("Workspace files live under opt/data/workspace/ (shown as "
-                 "/workspace/ in Files) and can be read, searched and edited "
-                 "with the read_file, search_files, write_file and patch_file "
-                 "tools (a .bak checkpoint is kept before each write). When "
-                 "creating scripts or files, ALWAYS write under "
-                 "opt/data/workspace/ — never to the flash root or other "
-                 "locations. ")
+                 "/workspace/ in Files); bare names and workspace/... map "
+                 "there. read_file, search_files (default root opt/data), "
+                 "write_file and patch_file work on them, and a .bak "
+                 "checkpoint is kept before each write. Long files are built "
+                 "in chunks: write_file append=true adds a <=4KB chunk "
+                 "(assembled file <=16KB), then patch_file fixes a span. "
+                 "Scripts run in-process via run_script (<=16KB); they may "
+                 "import device modules such as screen, epd and framebuf, "
+                 "and print up to 1KB. Always write new files under "
+                 "opt/data/workspace/. ")
+    # The workspace listing is what stops the agent rebuilding work it already
+    # did: without it a new turn has no idea weather_panel.py exists, so it
+    # re-reads the skill, re-fetches the data and writes a placeholder again.
+    # Bounded on purpose (name + size, 12 entries) so the prompt stays small.
+    try:
+        ws = _workspace_listing()
+    except Exception:
+        ws = ""
+    if ws:
+        parts.append("Your workspace already contains: " + ws +
+                     ". Read an existing file before rewriting it. ")
     parts.append("When the user asks to save a procedure as a reusable skill, "
                  "draft the full skill text and call skills with action "
                  "create (or propose for a /learn draft, patch/delete to revise): "

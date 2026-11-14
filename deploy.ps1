@@ -3,6 +3,7 @@
 #   powershell -File deploy.ps1                 # app code + prebuilt UI
 #   powershell -File deploy.ps1 -Build          # rebuild the UI first
 #   powershell -File deploy.ps1 -Port COM7
+#   powershell -File deploy.ps1 -DeviceHost 192.168.5.29   # HTTP verify
 #
 # Prerequisites (one-off):
 #   * MicroPython ESP32_GENERIC_S3-SPIRAM_OCT flashed at offset 0
@@ -12,8 +13,13 @@
 # The UI is a compiled bundle (ui/ -> www/): index.html, assets/app.js,
 # assets/app.css plus their .gz twins. Only three files are served, so the
 # deploy is small even though app.js is ~420 KB.
+#
+# -DeviceHost is the device's LAN address for the post-reset health check.
+# The board is on DHCP, so the address changes: read the `WiFi OK: <ip>` line
+# from the serial boot log and pass it here. No address is baked in.
 param(
   [string]$Port = "COM11",
+  [string]$DeviceHost = "",
   [switch]$Build,
   [switch]$SkipUI
 )
@@ -84,7 +90,8 @@ $code = @(
   "server.py", "fsutil.py", "memory.py", "cron.py",
   "skillstore.py", "sessions.py", "delegate.py", "checkpoint.py", "todo.py",
   "gateway.py", "logbuf.py", "prompt.py", "providers.py", "exec_py.py",
-  "read_file.py", "write_file.py", "patch_file.py", "search_files.py"
+  "read_file.py", "write_file.py", "patch_file.py", "search_files.py",
+  "builtin_skills.py", "paneltext.py"
 )
 foreach ($f in $code) {
   $local = Join-Path "app" $f
@@ -116,12 +123,19 @@ Write-Host "Deploy complete. Rebooting..."
 MPRun @("reset") | Out-Null
 
 Start-Sleep -Seconds 8
-Write-Host "Waiting for the device to answer..."
-for ($i = 0; $i -lt 10; $i++) {
-  try {
-    $r = Invoke-WebRequest -Uri "http://192.168.5.56/api/status" -TimeoutSec 5 -UseBasicParsing
-    if ($r.StatusCode -eq 200) { Write-Host "Device is up: http://192.168.5.56/"; break }
-  } catch {
-    Start-Sleep -Seconds 3
+if (-not $DeviceHost) {
+  # DHCP: the lease changes, so there is no baked-in address to poll. Tell the
+  # caller where to look instead of guessing and reporting a false failure.
+  Write-Host "No -DeviceHost given, skipping the HTTP health check."
+  Write-Host "Read 'WiFi OK: <ip>' from the serial boot log, then re-run with -DeviceHost <ip>."
+} else {
+  Write-Host "Waiting for the device to answer on $DeviceHost ..."
+  for ($i = 0; $i -lt 10; $i++) {
+    try {
+      $r = Invoke-WebRequest -Uri "http://$DeviceHost/api/status" -TimeoutSec 5 -UseBasicParsing
+      if ($r.StatusCode -eq 200) { Write-Host "Device is up: http://$DeviceHost/"; break }
+    } catch {
+      Start-Sleep -Seconds 3
+    }
   }
 }
